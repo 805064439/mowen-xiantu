@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23a63a2b' rx='8'/%3E%3Ctext y='75' x='50%' text-anchor='middle' font-size='68' font-family='serif' fill='%23f5efe0'%3E道%3C/text%3E%3C/svg%3E">
+<title>墨问仙途 · AI修仙文字游戏</title>
+<style>
+  :root{
+    --paper:#efe9d8; --paper2:#f7f3e6; --ink:#2b2a26; --ink-soft:#565045;
+    --muted:#8a8171; --line:#d8cfba; --line2:#c9bfa5;
+    --seal:#a63a2b; --jade:#4a6b4f; --gold:#9a7b2d;
+    --c-hp:#b03a2e; --c-qi:#3d5a72; --c-exp:#b0852e;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    font-family:"Noto Serif SC","Noto Serif CJK SC","Source Han Serif SC","Songti SC","STSong","SimSun",serif;
+    background:
+      radial-gradient(1200px 500px at 85% -10%, rgba(120,110,85,.14), transparent 60%),
+      radial-gradient(900px 420px at -10% 110%, rgba(90,100,90,.10), transparent 55%),
+      var(--paper);
+    color:var(--ink); line-height:1.8;
+  }
+  #app{max-width:660px; margin:0 auto; padding:14px 14px 40px; display:flex; flex-direction:column; min-height:100%;}
+
+  /* ---------- 头部 ---------- */
+  header{display:flex; align-items:center; gap:14px; padding:6px 2px 14px;}
+  .seal{
+    width:52px; height:52px; flex:none; background:var(--seal); color:#f5efe0;
+    display:grid; grid-template-columns:1fr 1fr; place-items:center;
+    border-radius:5px; transform:rotate(-4deg);
+    font-size:15px; font-weight:700; letter-spacing:1px;
+    box-shadow:2px 3px 8px rgba(90,30,20,.25); line-height:1.1;
+  }
+  .seal span{display:block; width:100%; text-align:center;}
+  .title-wrap{flex:1; min-width:0;}
+  h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
+  .realm-line{display:flex; align-items:baseline; gap:10px; margin-top:2px;}
+  #realm{font-size:26px; font-weight:700; letter-spacing:5px; transition:opacity .4s;}
+  #realm-full{font-size:11px; color:var(--gold); letter-spacing:2px;}
+  #mode-badge{
+    font-size:11px; color:var(--muted); border:1px solid var(--line2);
+    padding:1px 8px; border-radius:99px; letter-spacing:2px; display:none;
+  }
+
+  /* ---------- 状态卡 ---------- */
+  #status{
+    background:var(--paper2); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; box-shadow:0 2px 10px rgba(80,70,50,.07);
+  }
+  .bar-row{display:flex; align-items:center; gap:10px; margin:7px 0;}
+  .bar-label{font-size:12.5px; color:var(--ink-soft); letter-spacing:2px; width:34px; flex:none;}
+  .bar-track{flex:1; height:8px; background:#e4ddc8; border-radius:99px; overflow:hidden;}
+  .bar-fill{height:100%; border-radius:99px; transition:width .7s cubic-bezier(.2,.8,.3,1);}
+  .bar-val{font-size:12px; color:var(--muted); width:64px; text-align:right; flex:none; font-variant-numeric:tabular-nums;}
+  #bar-hp .bar-fill{background:linear-gradient(90deg,#8f2f24,var(--c-hp));}
+  #bar-qi .bar-fill{background:linear-gradient(90deg,#2f4759,var(--c-qi));}
+  #bar-exp .bar-fill{background:linear-gradient(90deg,#8f6c22,var(--c-exp));}
+  #bar-exp.exp-full .bar-fill{animation:glow 1.6s ease-in-out infinite;}
+  @keyframes glow{50%{filter:brightness(1.45);}}
+  .stat-foot{display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:9px; padding-top:9px; border-top:1px dashed var(--line);}
+  .stones{font-size:13px; color:var(--ink-soft); letter-spacing:1px;}
+  .stones b{color:var(--ink); font-variant-numeric:tabular-nums;}
+  .item-chip{
+    font-size:11.5px; color:var(--ink-soft); background:rgba(120,108,80,.08);
+    border:1px solid var(--line); border-radius:99px; padding:1px 9px; letter-spacing:.5px;
+  }
+  .item-empty{font-size:11.5px; color:var(--muted); letter-spacing:1px;}
+
+  /* ---------- 剧情区 ---------- */
+  #story-card{
+    background:var(--paper2); border:1px solid var(--line); border-radius:10px;
+    padding:18px 18px 12px; margin-top:12px; flex:1;
+    box-shadow:0 2px 10px rgba(80,70,50,.07);
+  }
+  #story{min-height:180px; cursor:pointer;}
+  .scene{font-size:15.5px; margin-bottom:14px; text-align:justify;}
+  .scene:not(:last-child){opacity:.62;}
+  .scene::before{content:"◆"; display:block; font-size:9px; color:var(--line2); margin-bottom:8px; letter-spacing:3px;}
+  .caret{display:inline-block; width:8px; border-bottom:2px solid var(--ink-soft); margin-left:2px; animation:blink .8s step-end infinite; vertical-align:middle;}
+  @keyframes blink{50%{opacity:0;}}
+
+  /* ---------- 选项 ---------- */
+  #choices{margin-top:14px; display:flex; flex-direction:column; gap:10px;}
+  .choice{
+    display:flex; align-items:center; gap:12px; width:100%;
+    background:transparent; border:1px solid var(--line2); border-radius:9px;
+    padding:11px 14px; cursor:pointer; text-align:left;
+    font-family:inherit; font-size:15px; color:var(--ink);
+    transition:background .18s, color .18s, border-color .18s, transform .08s;
+    animation:rise .35s both;
+  }
+  .choice:nth-child(2){animation-delay:.07s;} .choice:nth-child(3){animation-delay:.14s;}
+  .choice:nth-child(4){animation-delay:.21s;}
+  @keyframes rise{from{opacity:0; transform:translateY(7px);}}
+  .choice:hover:not(:disabled){background:var(--ink); color:#f2ecdd; border-color:var(--ink);}
+  .choice:active:not(:disabled){transform:translateY(1px);}
+  .choice:disabled{opacity:.45; cursor:default;}
+  .cid{flex:none; width:22px; height:22px; border:1px solid currentColor; border-radius:4px;
+       display:grid; place-items:center; font-size:12px; opacity:.85;}
+  .ctext{flex:1; letter-spacing:.5px;}
+  .risk{flex:none; font-size:11px; letter-spacing:2px; opacity:.8;}
+  .r-low{color:var(--jade);} .r-mid{color:var(--gold);} .r-high{color:var(--seal);}
+  .choice:hover:not(:disabled) .risk{color:inherit; opacity:.9;}
+  .choice.gold{border-color:var(--gold); box-shadow:inset 0 0 0 1px rgba(154,123,45,.35);}
+  .choice.gold .ctext{color:var(--gold); font-weight:700;}
+  .choice.gold:hover:not(:disabled){background:var(--gold); border-color:var(--gold);}
+  .choice.gold:hover:not(:disabled) .ctext{color:#f7f3e6;}
+
+  /* ---------- 加载 / 错误 ---------- */
+  #loading{display:none; margin-top:14px; text-align:center; color:var(--muted);
+    font-size:13.5px; letter-spacing:4px; padding:16px 0 6px;}
+  #loading.on{display:block;}
+  #loading i{font-style:normal; animation:dotfade 1.2s infinite;}
+  #loading i:nth-child(2){animation-delay:.2s;} #loading i:nth-child(3){animation-delay:.4s;}
+  @keyframes dotfade{0%,100%{opacity:.15;} 50%{opacity:.9;}}
+  .error-card{
+    border:1px dashed var(--seal); color:var(--seal); border-radius:9px;
+    padding:14px 16px; font-size:13.5px; background:rgba(166,58,43,.05);
+  }
+  .retry{border-color:var(--seal); color:var(--seal);}
+  .retry:hover:not(:disabled){background:var(--seal); color:#f5efe0; border-color:var(--seal);}
+
+  /* ---------- 飘字 ---------- */
+  #floats{position:fixed; right:14px; top:24%; z-index:60; pointer-events:none;
+    display:flex; flex-direction:column; align-items:flex-end; gap:4px;}
+  .float{font-size:14px; letter-spacing:1px; background:var(--paper2); border:1px solid var(--line);
+    border-radius:99px; padding:2px 12px; box-shadow:0 2px 8px rgba(80,70,50,.12);
+    animation:floatUp 2.4s ease-out both; white-space:nowrap; font-weight:700;}
+  @keyframes floatUp{0%{opacity:0; transform:translateX(16px);} 12%{opacity:1; transform:none;}
+    75%{opacity:1;} 100%{opacity:0; transform:translateY(-26px);}}
+  .f-pos{color:var(--jade);} .f-neg{color:var(--seal);} .f-item{color:var(--gold); font-weight:400;}
+
+  /* ---------- 特效 ---------- */
+  body.near-death::after{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:80;
+    box-shadow:inset 0 0 120px 40px rgba(140,20,10,.55);
+    animation:vignette 1.1s ease-out both;
+  }
+  @keyframes vignette{0%{opacity:0;} 25%{opacity:1;} 100%{opacity:0;}}
+  #bt-flash{position:fixed; inset:0; z-index:90; display:grid; place-items:center; pointer-events:none;
+    background:radial-gradient(circle at center, rgba(247,243,230,.96) 0%, rgba(247,243,230,.55) 45%, transparent 75%);
+    animation:btflash 1.9s ease-out both;}
+  #bt-flash .bt-word{font-size:46px; font-weight:700; letter-spacing:14px; color:var(--ink);
+    text-shadow:0 2px 14px rgba(120,90,30,.4); animation:btword 1.9s ease-out both; padding-left:14px;}
+  #bt-flash .bt-sub{position:absolute; margin-top:110px; font-size:13px; letter-spacing:8px; color:var(--gold); padding-left:8px;}
+  @keyframes btflash{0%{opacity:0;} 18%{opacity:1;} 80%{opacity:1;} 100%{opacity:0;}}
+  @keyframes btword{0%{transform:scale(.6); opacity:0;} 22%{transform:scale(1.06); opacity:1;}
+    30%{transform:scale(1);} 100%{transform:scale(1.04); opacity:1;}}
+  #ending-mask{position:fixed; inset:0; z-index:95; display:grid; place-items:center;
+    background:rgba(30,26,20,.55); animation:fadeIn .5s both;}
+  #ending-mask .seal-end{
+    width:170px; height:170px; border:5px solid var(--seal); border-radius:10px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+    color:var(--seal); background:rgba(247,243,230,.92);
+    font-size:34px; font-weight:700; letter-spacing:10px; padding-left:10px;
+    animation:stamp .65s cubic-bezier(.2,1.6,.4,1) both;
+  }
+  .seal-end small{font-size:13px; letter-spacing:6px; font-weight:400; padding-left:6px;}
+  @keyframes stamp{0%{transform:scale(2.8) rotate(-18deg); opacity:0;}
+    60%{transform:scale(.95) rotate(-8deg); opacity:1;} 100%{transform:scale(1) rotate(-8deg);}}
+  @keyframes fadeIn{from{opacity:0;}}
+
+  /* ---------- 底部 ---------- */
+  footer{margin-top:18px; display:flex; align-items:center; justify-content:space-between;
+    gap:10px; font-size:11.5px; color:var(--muted); letter-spacing:1.5px; flex-wrap:wrap;}
+  #meta{font-variant-numeric:tabular-nums;}
+  #btn-restart{
+    font-family:inherit; font-size:11.5px; letter-spacing:2px; color:var(--muted);
+    background:none; border:1px solid var(--line2); border-radius:99px; padding:3px 13px; cursor:pointer;
+    transition:all .18s;
+  }
+  #btn-restart:hover{color:var(--seal); border-color:var(--seal);}
+
+  /* ---------- 重开确认 ---------- */
+  #confirm{position:fixed; inset:0; z-index:99; display:none; place-items:center;
+    background:rgba(30,26,20,.5); padding:20px;}
+  #confirm.on{display:grid;}
+  .confirm-card{background:var(--paper2); border:1px solid var(--line2); border-radius:12px;
+    padding:26px 30px; text-align:center; box-shadow:0 10px 40px rgba(30,26,20,.35); max-width:300px;}
+  .confirm-card h3{font-size:17px; letter-spacing:6px; margin-bottom:8px;}
+  .confirm-card p{font-size:12.5px; color:var(--muted); margin-bottom:18px; letter-spacing:1px;}
+  .confirm-card .row{display:flex; gap:12px; justify-content:center;}
+  .cbtn{font-family:inherit; font-size:14px; letter-spacing:3px; padding:8px 20px; border-radius:8px;
+    cursor:pointer; border:1px solid var(--line2); background:none; color:var(--ink-soft); transition:all .18s;}
+  .cbtn:hover{background:var(--ink); color:#f2ecdd; border-color:var(--ink);}
+  .cbtn.danger{border-color:var(--seal); color:var(--seal);}
+  .cbtn.danger:hover{background:var(--seal); color:#f5efe0;}
+
+  @media (max-width:480px){
+    #app{padding:10px 10px 30px;}
+    #realm{font-size:22px;}
+    .scene{font-size:14.5px;}
+    .bar-val{width:56px;}
+    #bt-flash .bt-word{font-size:34px; letter-spacing:9px;}
+    footer{flex-direction:column; align-items:center; gap:6px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="seal"><span>墨</span><span>问</span><span>仙</span><span>途</span></div>
+    <div class="title-wrap">
+      <h1>墨 问 仙 途</h1>
+      <div class="realm-line">
+        <span id="realm">炼气一层</span>
+        <span id="realm-full"></span>
+      </div>
+    </div>
+    <span id="mode-badge">演武模式</span>
+  </header>
+
+  <section id="status">
+    <div class="bar-row" id="bar-hp"><span class="bar-label">气血</span><div class="bar-track"><div class="bar-fill"></div></div><span class="bar-val"></span></div>
+    <div class="bar-row" id="bar-qi"><span class="bar-label">灵力</span><div class="bar-track"><div class="bar-fill"></div></div><span class="bar-val"></span></div>
+    <div class="bar-row" id="bar-exp"><span class="bar-label">修为</span><div class="bar-track"><div class="bar-fill"></div></div><span class="bar-val"></span></div>
+    <div class="stat-foot">
+      <span class="stones">灵石 <b id="stones">30</b></span>
+      <span id="items"></span>
+    </div>
+  </section>
+
+  <div id="story-card">
+    <div id="story"></div>
+    <div id="loading">天机推演中<i>·</i><i>·</i><i>·</i></div>
+  </div>
+
+  <div id="choices"></div>
+
+  <footer>
+    <span id="meta">第 1 轮</span>
+    <span>点击剧情文字可跳过打字</span>
+    <button id="btn-restart">再入轮回</button>
+  </footer>
+</div>
+
+<div id="floats"></div>
+<div id="confirm">
+  <div class="confirm-card">
+    <h3>尘缘已了？</h3>
+    <p>重开将抹去今生所有修行、记忆与际遇。</p>
+    <div class="row">
+      <button class="cbtn" id="btn-cancel">回返</button>
+      <button class="cbtn danger" id="btn-confirm-restart">再入轮回</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* ================================================================
+   《墨问仙途》前端 —— 渲染 / 存档 / 打字机，数值运算全在后端
+   ================================================================ */
+const API = (location.protocol.startsWith("http") ? "" : "http://localhost:8000") + "/api";
+const SAVE_KEY = "mowen_save_v1";
+
+const REALMS = ["炼气一层","炼气二层","炼气三层","炼气四层","炼气五层","炼气六层",
+                "炼气七层","炼气八层","炼气九层","筑基初期"];
+const EXP_MAX = [100,120,150,180,220,270,330,400,500,9999];
+
+const INIT_STATE = {
+  realm_index: 0, hp: 100, hp_max: 100, qi: 50, qi_max: 50,
+  exp: 10, spirit_stones: 30,
+  items: [
+    {name:"回气丹", qty:2, rarity:"下品"},
+    {name:"师父的钝剑", qty:1, rarity:"下品"},
+  ],
+  memory: ["独守青牛山破庙三年，师父云游未归", "昨夜炼气入体，初入炼气一层"],
+  recent: [], turn: 0,
+};
+
+const OPENING =
+  "庆元十七年，秋。\n\n青牛山下的破庙里，你睁开眼。师父走了三年，留下半袋米、一柄钝剑，" +
+  "和一句\"灵根如此，好自为之\"。昨夜，你终于炼气入体。\n\n山外妖兽近年频繁出没，坊市灵石价格一日三涨，" +
+  "传闻北边荒泽又现秘境。米缸将尽——是时候下山了。";
+
+const INIT_CHOICES = [
+  {id:"A", text:"下山，赶往青牛镇", risk:"mid", tag:"explore"},
+  {id:"B", text:"在破庙再打坐半日，巩固境界", risk:"low", tag:"cultivate"},
+  {id:"C", text:"翻检师父遗物，看看还有何可用", risk:"low", tag:"explore"},
+];
+
+/* ---------------- 全局 ---------------- */
+let state = null;
+let currentChoices = [];
+let loading = false;
+let ended = false;
+const typer = {timer:null, finish:null};
+
+const $ = s => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+
+/* ---------------- 启动 ---------------- */
+(async function init(){
+  if (!loadSave()) newGame(true);
+  renderStatus();
+  renderFooterMeta(null);
+  try {
+    const r = await fetch(API + "/health").then(r => r.json());
+    if (r.mode === "mock") {
+      const b = $("#mode-badge");
+      b.style.display = "inline-block";
+      b.title = "未配置 DeepSeek API Key，当前为本地演武剧情";
+    }
+  } catch(e) { /* 离线自娱，无妨 */ }
+})();
+
+function newGame(withOpening){
+  state = JSON.parse(JSON.stringify(INIT_STATE));
+  ended = false;
+  $("#story").innerHTML = "";
+  if (withOpening !== false) renderSceneStatic(OPENING, INIT_CHOICES, false);
+  currentChoices = INIT_CHOICES;
+  save();
+}
+
+function loadSave(){
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return false;
+    const s = JSON.parse(raw);
+    if (!s || s.v !== 1 || !s.state || !s.lastScene) return false;
+    state = s.state;
+    ended = !!s.ended;
+    $("#story").innerHTML = "";
+    renderSceneStatic(s.lastScene.narrative, s.lastScene.choices, false);
+    currentChoices = s.lastScene.choices;
+    return true;
+  } catch(e) { return false; }
+}
+
+function save(){
+  const last = $("#story").lastElementChild;
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v: 1, state,
+      ended,
+      lastScene: {narrative: last ? last.textContent : "", choices: currentChoices},
+    }));
+  } catch(e) {}
+}
+
+/* ---------------- 核心行动 ---------------- */
+async function act(action){
+  if (loading || !state || ended && action.type === "breakthrough") return;
+  loading = true;
+  showLoading(true);
+  disableChoices(true);
+  try {
+    const res = await fetch(API + "/act", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({state, action}),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error((data.error && data.error.message) || "未知异象");
+    applyScene(data);
+    save();
+  } catch(e) {
+    showError(action, e);
+  } finally {
+    loading = false;
+    showLoading(false);
+  }
+}
+
+function applyScene(d){
+  state = d.state;
+  currentChoices = d.choices;
+  const onDone = () => {
+    if (d.breakthrough && d.breakthrough.success) playBreakthrough(d.breakthrough.to);
+    else if (d.breakthrough && !d.breakthrough.success) floatText("冲关失败", "f-neg");
+    if (d.near_death) {
+      document.body.classList.add("near-death");
+      setTimeout(() => document.body.classList.remove("near-death"), 1200);
+    }
+    floatDeltas(d.delta_applied || {});
+    renderStatus();
+    renderChoices(d.choices);
+    renderFooterMeta(d.engine_meta);
+    if (d.ending && !ended) {
+      ended = true;
+      setTimeout(showEndingSeal, 1400);
+    }
+    save();
+  };
+  typeNarrative(d.narrative, onDone);
+}
+
+/* ---------------- 渲染 ---------------- */
+function renderStatus(){
+  const lv = state.realm_index;
+  $("#realm").textContent = REALMS[lv];
+  const expMax = EXP_MAX[lv];
+  const full = lv < 9 && state.exp >= expMax;
+  $("#realm-full").textContent = full ? "圆满 · 可冲关" : (lv === 9 ? "第一章 · 已筑基" : "");
+  setBar("#bar-hp", state.hp, state.hp_max);
+  setBar("#bar-qi", state.qi, state.qi_max);
+  setBar("#bar-exp", state.exp, expMax);
+  $("#bar-exp").classList.toggle("exp-full", full);
+  $("#stones").textContent = state.spirit_stones;
+  const box = $("#items");
+  box.innerHTML = "";
+  if (!state.items.length) {
+    box.appendChild(el("span", "item-empty", "身无长物"));
+  } else {
+    for (const it of state.items.slice(0, 8)) {
+      box.appendChild(el("span", "item-chip", `${it.name}×${it.qty}`));
+    }
+    if (state.items.length > 8) box.appendChild(el("span", "item-empty", `…等${state.items.length}件`));
+  }
+}
+
+function setBar(sel, v, max){
+  const row = $(sel);
+  row.querySelector(".bar-fill").style.width = Math.max(0, Math.min(100, v / max * 100)) + "%";
+  row.querySelector(".bar-val").textContent = `${v}/${max}`;
+}
+
+function renderFooterMeta(meta){
+  let t = `第 ${state.turn + 1} 轮`;
+  if (meta && meta.elapsed_ms) {
+    const sec = (meta.elapsed_ms / 1000).toFixed(2);
+    const src = meta.source === "fallback" ? " · 天机补全" : (meta.source === "mock" ? " · 演武" : "");
+    t += ` · 天机 ${sec}s${src}`;
+  }
+  $("#meta").textContent = t;
+}
+
+function renderChoices(choices){
+  const box = $("#choices");
+  box.innerHTML = "";
+  choices.forEach(c => {
+    const b = el("button", "choice" + (c.special === "breakthrough" ? " gold" : ""));
+    b.appendChild(el("span", "cid", c.id || "·"));
+    b.appendChild(el("span", "ctext", c.text));
+    const riskCls = c.risk === "low" ? "r-low" : c.risk === "high" ? "r-high" : "r-mid";
+    const riskTxt = c.special === "breakthrough" ? "冲关" : (c.risk === "low" ? "稳" : c.risk === "high" ? "险" : "常");
+    b.appendChild(el("span", "risk " + riskCls, riskTxt));
+    b.onclick = () => act({
+      type: c.special === "breakthrough" ? "breakthrough" : "choice",
+      id: c.id, text: c.text,
+    });
+    box.appendChild(b);
+  });
+}
+
+function disableChoices(dis){
+  document.querySelectorAll(".choice").forEach(b => b.disabled = dis);
+}
+
+function showLoading(on){
+  $("#loading").classList.toggle("on", on);
+  const box = $("#choices");
+  if (on) box.style.opacity = ".45";
+  else box.style.opacity = "";
+}
+
+function showError(action, e){
+  const box = $("#choices");
+  box.innerHTML = "";
+  const card = el("div", "error-card",
+    "天机紊乱，一时推演不出后事。（" + e.message + "）");
+  const btn = el("button", "choice retry", "");
+  btn.appendChild(el("span", "cid", "↻"));
+  btn.appendChild(el("span", "ctext", "凝神再试"));
+  btn.onclick = () => act(action);
+  box.append(card, btn);
+}
+
+/* ---------------- 打字机 ---------------- */
+function typeNarrative(text, onDone){
+  const storyBox = $("#story");
+  const p = el("p", "scene");
+  storyBox.appendChild(p);
+  scrollStory();
+  const plain = String(text);
+  let i = 0;
+  const speed = plain.length > 150 ? 16 : 24;
+  const tick = () => {
+    i += 2;
+    p.textContent = plain.slice(0, i);
+    if (i % 20 === 0) scrollStory();
+    if (i >= plain.length) finish();
+  };
+  const finish = () => {
+    if (typer.timer) clearInterval(typer.timer);
+    typer.timer = null;
+    p.textContent = plain;
+    typer.finish = null;
+    scrollStory();
+    onDone && onDone();
+  };
+  typer.finish = finish;
+  typer.timer = setInterval(tick, speed);
+}
+
+$("#story").addEventListener("click", () => {
+  if (typer.finish) typer.finish();
+});
+
+function scrollStory(){
+  const card = $("#story-card");
+  card.scrollIntoView({behavior: "smooth", block: "nearest"});
+  window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"});
+}
+
+function renderSceneStatic(narrative, choices){
+  const storyBox = $("#story");
+  const p = el("p", "scene", narrative);
+  storyBox.appendChild(p);
+  renderChoices(choices);
+}
+
+/* ---------------- 飘字 ---------------- */
+function floatText(txt, cls){
+  const f = el("span", "float " + (cls || ""), txt);
+  $("#floats").appendChild(f);
+  setTimeout(() => f.remove(), 2500);
+}
+
+function floatDeltas(d){
+  const names = {hp:"气血", qi:"灵力", exp:"修为", spirit_stones:"灵石"};
+  for (const k of ["hp", "qi", "exp", "spirit_stones"]) {
+    const v = d[k] | 0;
+    if (v > 0) floatText(`+${v} ${names[k]}`, "f-pos");
+    else if (v < 0) floatText(`${v} ${names[k]}`, "f-neg");
+  }
+  (d.items_add || []).forEach(it => floatText(`获得 ${it.name}×${it.qty}`, "f-item"));
+  (d.items_remove || []).forEach(it => floatText(`失去 ${it.name}×${it.qty}`, "f-neg"));
+}
+
+/* ---------------- 特效 ---------------- */
+function playBreakthrough(to){
+  const layer = el("div", "");
+  layer.id = "bt-flash";
+  const w = el("div", "bt-word", to + "！");
+  const s = el("div", "bt-sub", "境 界 精 进");
+  layer.append(w, s);
+  document.body.appendChild(layer);
+  setTimeout(() => layer.remove(), 2000);
+}
+
+function showEndingSeal(){
+  const mask = el("div", "");
+  mask.id = "ending-mask";
+  const seal = el("div", "seal-end", "");
+  seal.appendChild(el("span", "", "第一章"));
+  seal.appendChild(el("small", "", "· 完 ·"));
+  mask.appendChild(seal);
+  mask.onclick = () => mask.remove();
+  document.body.appendChild(mask);
+}
+
+/* ---------------- 重开 ---------------- */
+$("#btn-restart").onclick = () => $("#confirm").classList.add("on");
+$("#btn-cancel").onclick = () => $("#confirm").classList.remove("on");
+$("#btn-confirm-restart").onclick = () => {
+  $("#confirm").classList.remove("on");
+  localStorage.removeItem(SAVE_KEY);
+  newGame(true);
+  renderStatus();
+  renderFooterMeta(null);
+};
+</script>
+</body>
+</html>
