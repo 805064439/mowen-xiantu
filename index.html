@@ -36,8 +36,13 @@
   .seal span{display:block; width:100%; text-align:center;}
   .title-wrap{flex:1; min-width:0;}
   h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
-  .realm-line{display:flex; align-items:baseline; gap:10px; margin-top:2px;}
+  .realm-line{display:flex; align-items:baseline; gap:10px; margin-top:2px; flex-wrap:wrap;}
   #realm{font-size:26px; font-weight:700; letter-spacing:5px; transition:opacity .4s;}
+  #root-badge{
+    font-size:11px; color:var(--jade); border:1px solid rgba(74,107,79,.45);
+    padding:0 7px; border-radius:99px; letter-spacing:1px; white-space:nowrap;
+  }
+  #root-badge.root-heaven{color:var(--gold); border-color:rgba(154,123,45,.55);}
   #realm-full{font-size:11px; color:var(--gold); letter-spacing:2px;}
   #mode-badge{
     font-size:11px; color:var(--muted); border:1px solid var(--line2);
@@ -65,7 +70,9 @@
   .item-chip{
     font-size:11.5px; color:var(--ink-soft); background:rgba(120,108,80,.08);
     border:1px solid var(--line); border-radius:99px; padding:1px 9px; letter-spacing:.5px;
+    cursor:pointer; transition:all .15s; font-family:inherit;
   }
+  .item-chip:hover{border-color:var(--seal); color:var(--seal);}
   .item-empty{font-size:11.5px; color:var(--muted); letter-spacing:1px;}
 
   /* ---------- 剧情区 ---------- */
@@ -107,6 +114,25 @@
   .choice.gold .ctext{color:var(--gold); font-weight:700;}
   .choice.gold:hover:not(:disabled){background:var(--gold); border-color:var(--gold);}
   .choice.gold:hover:not(:disabled) .ctext{color:#f7f3e6;}
+
+  /* ---------- 自由输入 ---------- */
+  #custom-input{display:flex; gap:8px; margin-top:11px;}
+  #free-text{
+    flex:1; font-family:inherit; font-size:14px; color:var(--ink);
+    background:rgba(247,243,230,.6); border:1px dashed var(--line2); border-radius:9px;
+    padding:10px 14px; letter-spacing:.5px; outline:none; min-width:0;
+    transition:border-color .18s;
+  }
+  #free-text::placeholder{color:var(--muted); opacity:.7;}
+  #free-text:focus{border-color:var(--ink-soft);}
+  #free-text:disabled{opacity:.4;}
+  #btn-custom{
+    flex:none; font-family:inherit; font-size:13.5px; letter-spacing:4px;
+    color:var(--ink-soft); background:none; border:1px solid var(--line2);
+    border-radius:9px; padding:0 18px; cursor:pointer; transition:all .18s;
+  }
+  #btn-custom:hover:not(:disabled){background:var(--ink); color:#f2ecdd; border-color:var(--ink);}
+  #btn-custom:disabled{opacity:.4; cursor:default;}
 
   /* ---------- 加载 / 错误 ---------- */
   #loading{display:none; margin-top:14px; text-align:center; color:var(--muted);
@@ -206,6 +232,7 @@
       <h1>墨 问 仙 途</h1>
       <div class="realm-line">
         <span id="realm">炼气一层</span>
+        <span id="root-badge"></span>
         <span id="realm-full"></span>
       </div>
     </div>
@@ -229,6 +256,12 @@
 
   <div id="choices"></div>
 
+  <div id="custom-input">
+    <input id="free-text" list="custom-history" maxlength="60" placeholder="另行作为……（如：把丹药偷偷喂给灵猫）" autocomplete="off">
+    <datalist id="custom-history"></datalist>
+    <button id="btn-custom">行 事</button>
+  </div>
+
   <footer>
     <span id="meta">第 1 轮</span>
     <span>点击剧情文字可跳过打字</span>
@@ -240,7 +273,7 @@
 <div id="confirm">
   <div class="confirm-card">
     <h3>尘缘已了？</h3>
-    <p>重开将抹去今生所有修行、记忆与际遇。</p>
+    <p id="confirm-text">重开将抹去今生所有修行、记忆与际遇。</p>
     <div class="row">
       <button class="cbtn" id="btn-cancel">回返</button>
       <button class="cbtn danger" id="btn-confirm-restart">再入轮回</button>
@@ -255,6 +288,13 @@
    ================================================================ */
 const API = (location.protocol.startsWith("http") ? "" : "http://localhost:8000") + "/api";
 const SAVE_KEY = "mowen_save_v1";
+const REINC_KEY = "mowen_reincarnations_v1";
+const HISTORY_KEY = "mowen_history_v1";
+
+function loadReincarnations(){
+  try { return JSON.parse(localStorage.getItem(REINC_KEY) || "[]"); }
+  catch(e) { return []; }
+}
 
 const REALMS = ["炼气一层","炼气二层","炼气三层","炼气四层","炼气五层","炼气六层",
                 "炼气七层","炼气八层","炼气九层","筑基初期"];
@@ -289,6 +329,11 @@ let loading = false;
 let ended = false;
 const typer = {timer:null, finish:null};
 
+function abortTyper(){ // 静默中止打字机（不清屏则跳字，清屏则弃段）
+  if (typer.timer) clearInterval(typer.timer);
+  typer.timer = null; typer.finish = null;
+}
+
 const $ = s => document.querySelector(s);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -313,7 +358,9 @@ const el = (tag, cls, text) => {
 })();
 
 function newGame(withOpening){
+  abortTyper();
   state = JSON.parse(JSON.stringify(INIT_STATE));
+  state.reincarnations = loadReincarnations();
   ended = false;
   $("#story").innerHTML = "";
   if (withOpening !== false) renderSceneStatic(OPENING, INIT_CHOICES, false);
@@ -327,7 +374,9 @@ function loadSave(){
     if (!raw) return false;
     const s = JSON.parse(raw);
     if (!s || s.v !== 1 || !s.state || !s.lastScene) return false;
+    abortTyper();
     state = s.state;
+    if (!state.reincarnations) state.reincarnations = loadReincarnations();  // 旧档平滑升级
     ended = !!s.ended;
     $("#story").innerHTML = "";
     renderSceneStatic(s.lastScene.narrative, s.lastScene.choices, false);
@@ -349,7 +398,7 @@ function save(){
 
 /* ---------------- 核心行动 ---------------- */
 async function act(action){
-  if (loading || !state || ended && action.type === "breakthrough") return;
+  if (loading || !state || (ended && action.type === "breakthrough")) return;
   loading = true;
   showLoading(true);
   disableChoices(true);
@@ -357,7 +406,7 @@ async function act(action){
     const res = await fetch(API + "/act", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({state, action}),
+      body: JSON.stringify({state, action, last_choices: currentChoices}),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
@@ -386,6 +435,7 @@ function applyScene(d){
     renderStatus();
     renderChoices(d.choices);
     renderFooterMeta(d.engine_meta);
+    disableChoices(false); // 打字结束，恢复选项与自由输入
     if (d.ending && !ended) {
       ended = true;
       setTimeout(showEndingSeal, 1400);
@@ -399,6 +449,11 @@ function applyScene(d){
 function renderStatus(){
   const lv = state.realm_index;
   $("#realm").textContent = REALMS[lv];
+  const root = state.spirit_root || "";
+  const rb = $("#root-badge");
+  rb.textContent = root;
+  rb.title = root ? "灵根资质：影响修炼速度与冲关成败" : "";
+  rb.className = root.startsWith("天灵根") ? "root-heaven" : "";
   const expMax = EXP_MAX[lv];
   const full = lv < 9 && state.exp >= expMax;
   $("#realm-full").textContent = full ? "圆满 · 可冲关" : (lv === 9 ? "第一章 · 已筑基" : "");
@@ -413,7 +468,11 @@ function renderStatus(){
     box.appendChild(el("span", "item-empty", "身无长物"));
   } else {
     for (const it of state.items.slice(0, 8)) {
-      box.appendChild(el("span", "item-chip", `${it.name}×${it.qty}`));
+      const chip = el("button", "item-chip", `${it.name}×${it.qty}`);
+      chip.type = "button";
+      chip.title = "点击尝试服用 / 查看";
+      chip.onclick = () => act({type: "use_item", name: it.name});
+      box.appendChild(chip);
     }
     if (state.items.length > 8) box.appendChild(el("span", "item-empty", `…等${state.items.length}件`));
   }
@@ -455,6 +514,8 @@ function renderChoices(choices){
 
 function disableChoices(dis){
   document.querySelectorAll(".choice").forEach(b => b.disabled = dis);
+  $("#free-text").disabled = dis;
+  $("#btn-custom").disabled = dis;
 }
 
 function showLoading(on){
@@ -467,6 +528,7 @@ function showLoading(on){
 function showError(action, e){
   const box = $("#choices");
   box.innerHTML = "";
+  disableChoices(false); // 出错时也允许改走自由输入，不必死磕重试
   const card = el("div", "error-card",
     "天机紊乱，一时推演不出后事。（" + e.message + "）");
   const btn = el("button", "choice retry", "");
@@ -478,6 +540,7 @@ function showError(action, e){
 
 /* ---------------- 打字机 ---------------- */
 function typeNarrative(text, onDone){
+  if (typer.finish) typer.finish(); // 若上一段仍在打字，先补完再开新段
   const storyBox = $("#story");
   const p = el("p", "scene");
   storyBox.appendChild(p);
@@ -560,11 +623,63 @@ function showEndingSeal(){
   document.body.appendChild(mask);
 }
 
+/* ---------------- 自由输入 ---------------- */
+function pushHistory(text){
+  try {
+    let h = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    h = [text, ...h.filter(t => t !== text)].slice(0, 5);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+    const dl = $("#custom-history");
+    dl.innerHTML = "";
+    h.forEach(t => {
+      const o = document.createElement("option");
+      o.value = t;
+      dl.appendChild(o);
+    });
+  } catch(e) {}
+}
+
+function submitCustom(){
+  const input = $("#free-text");
+  const text = input.value.trim();
+  if (!text || loading) return;
+  input.value = "";
+  pushHistory(text);
+  act({type: "custom", text});
+}
+
+$("#btn-custom").onclick = submitCustom;
+$("#free-text").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); submitCustom(); }
+});
+
 /* ---------------- 重开 ---------------- */
-$("#btn-restart").onclick = () => $("#confirm").classList.add("on");
+function pushReincarnation(){
+  // 此生落幕 → 写入轮回名册（供下一世的江湖传说）
+  if (!state || !state.turn) return;
+  try {
+    const list = loadReincarnations();
+    list.unshift({
+      realm: REALMS[state.realm_index] || "凡人",
+      turn: state.turn,
+      memory: (state.memory || []).slice(-3),
+      ended: !!ended,
+    });
+    localStorage.setItem(REINC_KEY, JSON.stringify(list.slice(0, 5)));
+  } catch(e) {}
+}
+
+$("#btn-restart").onclick = () => {
+  const n = loadReincarnations().length;
+  $("#confirm-text").textContent = (n === 0
+    ? "重开将抹去今生所有修行、记忆与际遇。"
+    : `重开将抹去今生——但江湖会记得。此去，已是第 ${n + 1} 段轮回。`);
+  $("#confirm").classList.add("on");
+};
 $("#btn-cancel").onclick = () => $("#confirm").classList.remove("on");
 $("#btn-confirm-restart").onclick = () => {
   $("#confirm").classList.remove("on");
+  pushReincarnation();
   localStorage.removeItem(SAVE_KEY);
   newGame(true);
   renderStatus();
