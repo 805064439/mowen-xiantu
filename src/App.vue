@@ -11,6 +11,10 @@ import FloatLayer from "./components/FloatLayer.vue";
 import BtFlash from "./components/BtFlash.vue";
 import EndingMask from "./components/EndingMask.vue";
 import ConfirmModal from "./components/ConfirmModal.vue";
+import StickyBar from "./components/StickyBar.vue";
+import StatusDrawer from "./components/StatusDrawer.vue";
+import BackToNow from "./components/BackToNow.vue";
+import SaveCodeModal from "./components/SaveCodeModal.vue";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const isHeavenRoot = computed(() => (game.state?.spirit_root || "").startsWith("天灵根"));
@@ -49,7 +53,10 @@ onMounted(() => { actions.init(); });
     <footer>
       <span id="meta">{{ metaText }}</span>
       <span>点击剧情文字可跳过打字</span>
-      <button id="btn-restart" type="button" @click="actions.requestRestart()">再入轮回</button>
+      <span class="foot-btns">
+        <button id="btn-savecode" type="button" @click="game.saveCodeOpen = true">仙缘令</button>
+        <button id="btn-restart" type="button" @click="actions.requestRestart()">再入轮回</button>
+      </span>
     </footer>
   </div>
 
@@ -57,4 +64,8 @@ onMounted(() => { actions.init(); });
   <BtFlash />
   <EndingMask />
   <ConfirmModal />
+  <StickyBar />
+  <StatusDrawer />
+  <BackToNow />
+  <SaveCodeModal v-if="game.saveCodeOpen" />
 </template>

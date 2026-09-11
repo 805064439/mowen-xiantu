@@ -30,12 +30,20 @@ const overflow = computed(() => {
   return n > 8 ? n : 0;
 });
 
+/* 江湖人物摘要：主面板前 3 个，更多进抽屉 */
+const shownNpcs = computed(() => (game.state?.npcs || []).slice(0, 3));
+const npcOverflow = computed(() => Math.max(0, (game.state?.npcs || []).length - 3));
+
 function pct(v: number, max: number) {
   return Math.max(0, Math.min(100, v / max * 100)) + "%";
 }
 
 function useItem(name: string) {
   actions.act({ type: "use_item", name });
+}
+
+function openDrawer() {
+  game.statusDrawerOpen = true;
 }
 </script>
 
@@ -60,6 +68,17 @@ function useItem(name: string) {
           <span v-if="overflow" class="item-empty">…等{{ overflow }}件</span>
         </template>
       </span>
+    </div>
+
+    <div class="stat-npcs" v-if="shownNpcs.length">
+      <span class="npcs-label">江 湖</span>
+      <button v-for="n in shownNpcs" :key="n.name" type="button" class="npc-chip"
+              :class="{ neg: n.bond < 0 }" :title="`${n.title} · ${n.bond > 0 ? '善' : n.bond < 0 ? '恶' : '中立'}（${n.bond}）\n点击查看完整江湖人物`"
+              @click="openDrawer">
+        <i class="npc-dot"></i>{{ n.name }}
+      </button>
+      <button v-if="npcOverflow" type="button" class="npc-more" @click="openDrawer"
+              :title="`还有 ${npcOverflow} 位江湖人物`">…等{{ npcOverflow }}人</button>
     </div>
   </section>
 </template>

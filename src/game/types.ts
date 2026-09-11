@@ -27,7 +27,17 @@ export interface GameState {
   memory_summary?: string;
   recent: { action: string; narrative: string }[];
   reincarnations?: Reincarnation[];
+  npcs?: NpcEntry[];      // 江湖人物（道缘卡）
+  style_echo?: string[];  // 最近开篇回声（防 AI 复读）
   turn: number;
+}
+
+/** 江湖人物卡：bond 为道缘，-100 死敌 ~ 100 生死之交 */
+export interface NpcEntry {
+  name: string;
+  title: string;
+  bond: number;
+  met_turn?: number;
 }
 
 export type Risk = "low" | "mid" | "high";
@@ -65,11 +75,18 @@ export interface ActResponse {
   narrative: string;
   choices: Choice[];
   delta_applied: DeltaApplied;
+  npc_events?: NpcEvent[];   // 本轮道缘变化（用丹/结局轮为空）
   breakthrough: { success: boolean; from: string; to: string } | null;
   near_death: boolean;
   ending: boolean;
   engine_meta: EngineMeta;
   error?: { code: string; message: string };
+}
+
+/** 本轮道缘变化事件（供飘字） */
+export interface NpcEvent {
+  name: string;
+  delta: number;
 }
 
 export interface GameAction {

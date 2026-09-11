@@ -5,6 +5,6 @@ import vue from "@vitejs/plugin-vue";
 // 生产部署：相对路径 /api 由 Vercel rewrite 到 serverless 函数
 export default defineConfig({
   plugins: [vue()],
-  server: { proxy: { "/api": "http://localhost:8000" } },
-  preview: { proxy: { "/api": "http://localhost:8000" } },
+  server: { proxy: { "/api": "http://localhost:8000" }, allowedHosts: true },
+  preview: { proxy: { "/api": "http://localhost:8000" }, allowedHosts: true },
 });

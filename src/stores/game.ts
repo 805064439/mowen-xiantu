@@ -2,11 +2,12 @@
    —— 数值运算全在后端，前端只做渲染与存档 */
 
 import { reactive, computed } from "vue";
-import type { GameAction, GameState, Choice, ActResponse, ScenePara, FloatItem, EngineMeta } from "../game/types";
+import type { GameAction, GameState, Choice, ActResponse, ScenePara, FloatItem, EngineMeta, NpcEvent } from "../game/types";
 import { REALMS, OPENING, INIT_CHOICES } from "../game/constants";
 import {
-  readSave, writeSave, removeSave, freshState,
+  readSave, writeSave, removeSave, freshState, SAVE_KEY,
   loadReincarnations, saveReincarnations,
+  encodeSaveCode, decodeSaveCode,
 } from "../game/storage";
 
 const API = (location.protocol.startsWith("http") ? "" : "http://localhost:8000") + "/api";
@@ -29,6 +30,8 @@ export const game = reactive({
   mockMode: false,
   confirmOpen: false,
   confirmText: "",
+  statusDrawerOpen: false,   // 全状态抽屉（点吸顶迷你条唤起）
+  saveCodeOpen: false,       // 仙缘令弹窗（存档导入导出）
 });
 
 /* ---------------- 打字机 ---------------- */
@@ -100,6 +103,15 @@ function floatDeltas(d: { hp?: number; qi?: number; exp?: number; spirit_stones?
   (d.items_remove || []).forEach(it => floatText(`失去 ${it.name}×${it.qty}`, "f-neg"));
 }
 
+/** 道缘变化飘字：青云子 +8 / 铁牛道人 -12 */
+function floatNpcEvents(events: NpcEvent[] | undefined) {
+  (events || []).forEach(ev => {
+    if (!ev.delta) return;
+    floatText(`道缘·${ev.name} ${ev.delta > 0 ? "+" : ""}${ev.delta}`,
+      ev.delta > 0 ? "f-npc" : "f-neg");
+  });
+}
+
 /* ---------------- 特效 ---------------- */
 function playBreakthrough(to: string) {
   game.btFlash = to;
@@ -141,6 +153,7 @@ function applySceneEffects(d: ActResponse) {
     setTimeout(() => document.body.classList.remove("near-death"), 1200);
   }
   floatDeltas(d.delta_applied || {});
+  floatNpcEvents(d.npc_events);
   game.state = d.state;
   game.choices = d.choices;
   game.lastMeta = d.engine_meta;
@@ -314,6 +327,30 @@ function confirmRestart() {
   newGame(true);
 }
 
+/* ---------------- 仙缘令（存档码） ---------------- */
+/** 打开弹窗时导出当前进行中的进度（不依赖 localStorage 已写盘的时序） */
+async function exportSaveCode(): Promise<string> {
+  const last = game.scenes[game.scenes.length - 1];
+  const save = {
+    v: 1 as const,
+    state: game.state ?? freshState(),   // init 未完成时兜底为合法开局档
+    ended: game.ended,
+    lastScene: { narrative: last ? last.text : "", choices: game.choices },
+  };
+  return encodeSaveCode(save);
+}
+
+/** 导入仙缘令：校验 → 写入本地档 → 热应用。返回是否成功。 */
+async function importSaveCode(code: string): Promise<boolean> {
+  const save = await decodeSaveCode(code);
+  if (!save) return false;
+  try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) { return false; }
+  game.saveCodeOpen = false;
+  loadSave();
+  floatText("仙缘已续，前尘俱在", "f-item");
+  return true;
+}
+
 /* ---------------- 派生 ---------------- */
 export const metaText = computed(() => {
   if (!game.state) return "";
@@ -327,6 +364,6 @@ export const metaText = computed(() => {
   return t;
 });
 
-export const actions = { act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText };
+export const actions = { act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText, exportSaveCode, importSaveCode };
 
 export type { GameAction };
