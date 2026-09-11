@@ -130,6 +130,16 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
 .choice.gold:hover:not(:disabled){background:var(--gold); border-color:var(--gold);}
 .choice.gold:hover:not(:disabled) .ctext{color:#f7f3e6;}
 
+/* ---------- 斗法选项（⚔ 徽标） ---------- */
+.choice.battle{border-color:rgba(148,44,32,.45);}
+.choice.battle:hover:not(:disabled){background:var(--seal); border-color:var(--seal);}
+.fx-badge{
+  flex:none; font-size:12px; color:var(--seal); line-height:1;
+  animation:fxPulse 1.6s ease-in-out infinite;
+}
+.choice:hover:not(:disabled) .fx-badge{color:inherit;}
+@keyframes fxPulse{0%,100%{opacity:.55; transform:scale(1);} 50%{opacity:1; transform:scale(1.18);}}
+
 /* ---------- 自由输入 ---------- */
 #custom-input{display:flex; gap:8px; margin-top:11px;}
 #free-text{

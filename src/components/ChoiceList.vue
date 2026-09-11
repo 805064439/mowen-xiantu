@@ -6,7 +6,7 @@ import type { Choice } from "../game/types";
 function pick(c: Choice) {
   actions.act({
     type: c.special === "breakthrough" ? "breakthrough" : "choice",
-    id: c.id, text: c.text,
+    id: c.id, text: c.text, tag: c.tag,
   });
 }
 
@@ -36,10 +36,11 @@ function retry() {
     </template>
     <template v-else>
       <button v-for="c in game.choices" :key="c.id" type="button" class="choice"
-              :class="{ gold: c.special === 'breakthrough' }"
+              :class="{ gold: c.special === 'breakthrough', battle: c.tag === 'fight' }"
               :disabled="game.inputLocked" @click="pick(c)">
         <span class="cid">{{ c.id || "·" }}</span>
         <span class="ctext">{{ c.text }}</span>
+        <span v-if="c.tag === 'fight'" class="fx-badge" title="斗法">⚔</span>
         <span class="risk" :class="riskCls(c.risk)">{{ riskTxt(c) }}</span>
       </button>
     </template>

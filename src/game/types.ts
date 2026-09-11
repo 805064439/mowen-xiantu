@@ -29,6 +29,7 @@ export interface GameState {
   reincarnations?: Reincarnation[];
   npcs?: NpcEntry[];      // 江湖人物（道缘卡）
   style_echo?: string[];  // 最近开篇回声（防 AI 复读）
+  pending_events?: PendingEvent[];  // 待结算天机事件（赠宝/传功/寻仇）
   turn: number;
 }
 
@@ -38,6 +39,14 @@ export interface NpcEntry {
   title: string;
   bond: number;
   met_turn?: number;
+  fired?: Record<string, number>;  // 已触发过的事件 → 轮次（gift/teach/vendetta，同类一生一次）
+}
+
+/** 天机事件：由道缘阈值触发，下一轮结算 */
+export interface PendingEvent {
+  type: "gift" | "teach" | "vendetta";
+  npc: string;
+  at: number;
 }
 
 export type Risk = "low" | "mid" | "high";
@@ -94,6 +103,7 @@ export interface GameAction {
   id?: string;
   text?: string;
   name?: string;
+  tag?: string;  // 选项标签（fight → 后端掷斗法判定）
 }
 
 /** 叙事区的一个段落（一段剧情） */

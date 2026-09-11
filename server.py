@@ -334,7 +334,7 @@ def sanitize_state(raw: dict) -> dict:
                 "memory": [str(m).strip()[:40] for m in (r.get("memory") or [])[:3] if str(m).strip()],
             })
 
-    # 江湖人物（NPC 好感卡）：道缘 -100~100
+    # 江湖人物（NPC 好感卡）：道缘 -100~100；fired = 已触发的天机事件及轮次
     npcs = []
     for n in (raw.get("npcs") or [])[:6]:
         if not isinstance(n, dict):
@@ -342,12 +342,25 @@ def sanitize_state(raw: dict) -> dict:
         name = str(n.get("name", "")).strip()[:12]
         if not name:
             continue
+        fired_raw = n.get("fired") if isinstance(n.get("fired"), dict) else {}
+        fired = {k: clamp(_to_int(v, 0), 0, 9999)
+                 for k, v in fired_raw.items() if k in ("gift", "teach", "vendetta")}
         npcs.append({
             "name": name,
             "title": str(n.get("title", "")).strip()[:8] or "江湖人",
             "bond": _int(n.get("bond"), -100, 100, 0),
             "met_turn": clamp(_to_int(n.get("met_turn"), 0), 0, 9999),
+            "fired": fired,
         })
+
+    # 待触发的天机事件（道缘阈值跨越产生，下轮消费）
+    pending_events = []
+    for ev in (raw.get("pending_events") or [])[:2]:
+        if isinstance(ev, dict) and ev.get("type") in ("gift", "teach", "vendetta"):
+            npc = str(ev.get("npc", "")).strip()[:12]
+            if npc:
+                pending_events.append({"type": ev.get("type"), "npc": npc,
+                                       "at": clamp(_to_int(ev.get("at"), 0), 0, 9999)})
 
     # 文风回声（最近数轮开篇，防 AI 复读用）
     style_echo = [str(h)[:16] for h in (raw.get("style_echo") or [])[:8] if str(h).strip()]
@@ -368,13 +381,17 @@ def sanitize_state(raw: dict) -> dict:
         "reincarnations": reincarnations,
         "npcs": npcs,
         "style_echo": style_echo,
+        "pending_events": pending_events,
         "turn": _int(raw.get("turn"), 0, 9999, 0),
     }
 
 
 # ---------------------------------------------------------------- 天道判定（判定先行）
 def run_trial(state: dict, action: dict) -> tuple[str, dict | None]:
-    """对冲关行动掷骰。返回 (判定文本, 判定结果)。判定文本会原样喂给 AI。"""
+    """对冲关/斗法行动掷骰。返回 (判定文本, 判定结果)。判定文本会原样喂给 AI。"""
+    if action.get("tag") == "fight":
+        # 斗法：选项明言动手 → 战斗判定（自由输入不走此路，由叙事自然判定）
+        return run_fight_trial(state)
     if action.get("type") != "breakthrough":
         return "无特殊判定，请依据玩家行动自然推进剧情。", None
     level = state["realm_index"]
@@ -400,8 +417,8 @@ def run_trial(state: dict, action: dict) -> tuple[str, dict | None]:
 
 def apply_trial(state: dict, trial: dict | None) -> dict | None:
     """把突破判定直接写入状态（纯代码层，不经 AI）。返回前端播放动画用的视图。"""
-    if not trial or trial.get("ending"):
-        return None
+    if not trial or trial.get("ending") or trial.get("fight"):
+        return None  # 斗法 trial 由 apply_fight 结算，不在此处理
     level = state["realm_index"]
     view = {"success": trial["success"], "from": realm_name(level), "to": realm_name(level + 1)}
     if trial["success"]:
@@ -415,6 +432,146 @@ def apply_trial(state: dict, trial: dict | None) -> dict | None:
         state["exp"] = int(state["exp"] * 0.7)
         state["hp"] = clamp(state["hp"] - 15, 0, state["hp_max"])
     return view
+
+
+# ---------------------------------------------------------------- 轻量斗法（一次行动 + 判定制演出）
+ENEMY_POOL = ["黑风寨修士", "泽地铁甲蜥", "劫道散修", "幻面狐妖", "枯尸道人", "山魈"]
+LOOT_POOL = [("碎星石", "中品"), ("凝气丹", "下品"), ("铁背蜥甲", "下品"), ("引灵符", "中品")]
+
+
+def combat_power(state: dict) -> float:
+    """战力：气血灵力为体，境界为骨，灵根为资质。"""
+    root_coeff, _ = spirit_root_info(state.get("spirit_root"))
+    return (state["hp"] * 0.5 + state["qi"] * 0.4
+            + state["realm_index"] * 25 + state["exp"] * 0.2) * root_coeff
+
+
+def run_fight_trial(state: dict, enemy: str | None = None, hard: bool = False) -> tuple[str, dict]:
+    """斗法判定：胜负、伤亡、战利品全由天道定死，AI 只负责演出。
+    hard=True 为死敌寻仇（敌偏强、胜则战利更厚）。"""
+    ratio = random.uniform(*(1.1, 1.4) if hard else (0.6, 1.3))  # 敌方战力 / 我方战力
+    enemy = enemy or random.choice(ENEMY_POOL)
+    rounds = random.randint(3, 12)
+    fx = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0, "items_add": [], "items_remove": []}
+    if ratio < 0.75:      # 完胜
+        outcome = "win"
+        fx["hp"] = -random.randint(4, 12)
+        fx["qi"] = -random.randint(6, 15)
+        fx["exp"] = random.randint(15, 30)
+        fx["spirit_stones"] = random.randint(20, 60)
+        if hard or random.random() < 0.3:
+            name, rarity = random.choice(LOOT_POOL)
+            fx["items_add"] = [{"name": name, "qty": 1, "rarity": rarity}]
+        verdict = f"{rounds}合之内技高一筹，敌力竭败走。你仅受皮肉之伤，搜检遗落，得灵石{fx['spirit_stones']}、修为心得{fx['exp']}。"
+    elif ratio <= 1.05:   # 险胜
+        outcome = "narrow"
+        fx["hp"] = -random.randint(16, 32)
+        fx["qi"] = -random.randint(18, 30)
+        fx["exp"] = random.randint(10, 20)
+        fx["spirit_stones"] = random.randint(10, 40)
+        verdict = f"缠斗{rounds}合，两败俱伤——对方终于先撑不住，踉跄遁走。你伤得不轻，仍有所获：灵石{fx['spirit_stones']}、修为心得{fx['exp']}。"
+    else:                 # 落败
+        outcome = "lose"
+        fx["hp"] = -random.randint(int(state["hp_max"] * 0.3), int(state["hp_max"] * 0.5))
+        fx["qi"] = -random.randint(int(state["qi_max"] * 0.4), int(state["qi_max"] * 0.7))
+        fx["exp"] = random.randint(3, 8)
+        fx["spirit_stones"] = -random.randint(8, 25)
+        verdict = f"力战{rounds}合，终究技逊一筹，你且战且退，狼狈脱身。气血大损，随身灵石散落{abs(fx['spirit_stones'])}枚。"
+    trial = {"fight": True, "outcome": outcome, "enemy": enemy, "fx": fx}
+    text = (
+        f"【斗法判定】玩家与「{enemy}」交手，{verdict}"
+        f"（以上胜负、伤亡、得失均已由天道定死，你必须严格按此叙述战斗经过与结果，不得改写胜负，不得额外增减得失。）"
+    )
+    return text, trial
+
+
+def apply_fight(state: dict, trial: dict) -> dict:
+    """斗法效果直接写入状态（纯代码层，不经 AI）。返回 fx 供前端飘字合并。"""
+    fx = trial.get("fx") or {}
+    state["hp"] = clamp(state["hp"] + _to_int(fx.get("hp"), 0), 0, state["hp_max"])
+    state["qi"] = clamp(state["qi"] + _to_int(fx.get("qi"), 0), 0, state["qi_max"])
+    state["exp"] = clamp(state["exp"] + _to_int(fx.get("exp"), 0), 0, exp_max_of(state["realm_index"]))
+    state["spirit_stones"] = clamp(state["spirit_stones"] + _to_int(fx.get("spirit_stones"), 0), 0, 99999)
+    for it in (fx.get("items_add") or [])[:1]:
+        _add_item(state["items"], it)
+    return fx
+
+
+def _add_item(items: list, it: dict) -> None:
+    name = str(it.get("name", ""))[:12]
+    qty = clamp(_to_int(it.get("qty"), 1), 1, 99)
+    rarity = it.get("rarity") if it.get("rarity") in ("下品", "中品", "上品") else "下品"
+    for own in items:
+        if own["name"] == name:
+            own["qty"] = clamp(own["qty"] + qty, 1, 99)
+            return
+    items.append({"name": name, "qty": qty, "rarity": rarity})
+
+
+def _merge_fx(delta_applied: dict, fx: dict) -> None:
+    """把代码层效果（战斗/天机事件）并入 delta_applied —— 仅展示层，state 已应用。"""
+    if not fx:
+        return
+    for k in ("hp", "qi", "exp", "spirit_stones"):
+        if fx.get(k):
+            delta_applied[k] = (delta_applied.get(k) or 0) + fx[k]
+    for it in (fx.get("items_add") or []):
+        delta_applied.setdefault("items_add", []).append(it)
+    for it in (fx.get("items_remove") or []):
+        delta_applied.setdefault("items_remove", []).append(it)
+
+
+# ---------------------------------------------------------------- 道缘阈值 → 天机事件
+def check_npc_events(state: dict) -> None:
+    """道缘跨越阈值 → 记入 pending_events，下轮由天道结算叙事。同类事件一生一次。"""
+    for npc in state["npcs"]:
+        fired = npc.setdefault("fired", {})
+        bond = npc["bond"]
+        if bond >= 80 and "gift" not in fired and len(state["pending_events"]) < 2:
+            fired["gift"] = state["turn"]
+            state["pending_events"].append({"type": "gift", "npc": npc["name"], "at": state["turn"]})
+        elif (bond >= 80 and "gift" in fired and "teach" not in fired
+              and state["turn"] - fired["gift"] >= 5 and len(state["pending_events"]) < 2):
+            fired["teach"] = state["turn"]
+            state["pending_events"].append({"type": "teach", "npc": npc["name"], "at": state["turn"]})
+        elif bond <= -60 and "vendetta" not in fired and len(state["pending_events"]) < 2:
+            fired["vendetta"] = state["turn"]
+            state["pending_events"].append({"type": "vendetta", "npc": npc["name"], "at": state["turn"]})
+
+
+def consume_pending_event(state: dict) -> tuple[str, dict | None, dict]:
+    """消费一条天机事件。返回 (trial_text, trial, fx)：
+    gift/teach → 效果代码直接结算；vendetta → 转斗法判定（hard）。"""
+    if not state["pending_events"]:
+        return "无特殊判定，请依据玩家行动自然推进剧情。", None, {}
+    ev = state["pending_events"].pop(0)
+    kind, npc_name = ev["type"], ev["npc"]
+    npc = next((n for n in state["npcs"] if n["name"] == npc_name), None)
+    title = npc["title"] if npc else "故人"
+    if kind == "gift":
+        loot_name, loot_rarity = random.choice(LOOT_POOL)
+        stones = random.randint(30, 80)
+        fx = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": stones,
+              "items_add": [{"name": loot_name, "qty": 1, "rarity": loot_rarity}], "items_remove": []}
+        _add_item(state["items"], fx["items_add"][0])
+        state["spirit_stones"] = clamp(state["spirit_stones"] + stones, 0, 99999)
+        text = (
+            f"【天机事件·故人赠宝】{npc_name}（{title}）与你道缘已臻生死之交，辗转寻来，"
+            f"赠你{loot_name}一{['枚', '张', '件'][hash(loot_name) % 3]}（{loot_rarity}）与灵石{stones}枚，"
+            f"又嘱托数语。请在叙事中自然呈现此事。（物品与灵石已由天道记入户下，勿在 delta 中重复计入。）"
+        )
+        return text, None, fx
+    if kind == "teach":
+        fx = {"hp": 0, "qi": 0, "exp": 40, "spirit_stones": 0, "items_add": [], "items_remove": []}
+        state["exp"] = clamp(state["exp"] + 40, 0, exp_max_of(state["realm_index"]))
+        text = (
+            f"【天机事件·故人传功】{npc_name}（{title}）与你坐忘半日，倾囊相授修行心得，修为大进（+40）。"
+            f"请在叙事中自然呈现传功情景。（修为已由天道记入，勿在 delta 中重复计入。）"
+        )
+        return text, None, fx
+    # vendetta → 死敌寻仇，直接开战
+    text, trial = run_fight_trial(state, enemy=npc_name, hard=True)
+    return text, trial, trial.get("fx") or {}
 
 
 # ---------------------------------------------------------------- AI 提议 delta 的钳制
@@ -533,6 +690,7 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 11. 输出 json 时，narrative 必须放在第一个字段（供流式渲染），其余字段顺序不限。
 12. 【江湖人物】玩家状态中列出的相识人物，姓名、身份必须严格沿用，不得改名、不得张冠李戴；本轮剧情若与其中之人有实质互动（交谈、恩怨、授业、冲突），或新登场了一个值得记住的人物，才在 npc_updates 中输出一条，无人物互动则输出空数组。新人物姓名须为 2~4 字中文名，身份一至四字。delta 为本轮道缘变化，正为亲近、负为疏远乃至结仇，幅度必须克制（-20~20），与剧情严格一致。
 13. 若收到【文风禁用】清单，本轮开篇严禁与其中的任何一条相同或高度雷同——换场景、换视角、换句式起笔。
+14. 若收到【斗法判定】或【天机事件】，本轮 narrative 须以此事为主线索展开：其中写明的人物、胜负、伤亡、所得必须原样呈现，可补写招式交锋、神态心理，但不得增删任何结果；此类数值已由天道记入，delta 中不得重复计入。
 
 【输出 json 结构】
 {
@@ -868,7 +1026,7 @@ def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool 
     """AI 生成 → 解析校验 → 失败错误回喂重试 1 次 → 仍失败走兜底事件池。"""
     t0 = time.time()
     if not (API_KEY and _OPENAI_OK):
-        data = _deepish_copy(random.choice(MOCK_EVENTS))
+        data = _mock_trial_scene(trial_text) or _deepish_copy(random.choice(MOCK_EVENTS))
         return data, {"source": "mock", "model": "演武", "elapsed_ms": 30, "retries": 0,
                       "tokens_in": 0, "tokens_out": 0}
 
@@ -912,6 +1070,55 @@ def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool 
 
 
 # ---------------------------------------------------------------- 演武事件池（无 key 用）
+def _mock_trial_scene(trial_text: str) -> dict | None:
+    """演武模式下斗法/天机事件轮的定制叙事：判定已由天道代码定死，此处只做贴合的演出。
+    数值全由 event_fx / apply_fight 结算，故 delta 全 0，防止重复计。"""
+    zero = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0, "items_add": [], "items_remove": []}
+    if "【斗法判定】" in trial_text:
+        body = (trial_text.split("（以上胜负")[0]
+                .replace("【斗法判定】", "").replace("玩家", "你").strip())
+        return {
+            "narrative": body + " 你立于原地缓缓吐纳，将方才一招一式在心中复盘一遍，"
+                            "只觉临阵应变又纯熟了几分。（演武预演）",
+            "choices": [
+                {"text": "寻处静坐，调匀气血伤势", "risk": "low", "tag": "rest"},
+                {"text": "趁余勇探看四周山林", "risk": "mid", "tag": "explore"},
+                {"text": "整点行装，赶往下一处坊市", "risk": "mid", "tag": "trade"},
+            ],
+            "delta": _deepish_copy(zero),
+            "memory": "与人斗法，胜负各安天命",
+        }
+    if "【天机事件·故人赠宝】" in trial_text:
+        body = (trial_text.split("。请在叙事中")[0]
+                .replace("【天机事件·故人赠宝】", "").strip())
+        return {
+            "narrative": body + "。故人远来，你于路旁石上以茶代酒，彻夜长谈，"
+                            "临别时对方执意要你收下之物，你推辞不过，只得郑重收入行囊。（演武预演）",
+            "choices": [
+                {"text": "细察所赠之物，参详其妙用", "risk": "low", "tag": "other"},
+                {"text": "回赠些随身之物，全了这段情义", "risk": "mid", "tag": "trade"},
+                {"text": "辞别故人，趁晨光赶路", "risk": "low", "tag": "explore"},
+            ],
+            "delta": _deepish_copy(zero),
+            "memory": "故人辗转寻来，倾囊相赠",
+        }
+    if "【天机事件·故人传功】" in trial_text:
+        body = (trial_text.split("。请在叙事中")[0]
+                .replace("【天机事件·故人传功】", "").strip())
+        return {
+            "narrative": body + "。是夜山风过林，涛声如潮，你将所授心法逐句推敲，"
+                            "只觉数处旧日滞涩之处豁然贯通。（演武预演）",
+            "choices": [
+                {"text": "趁悟性正热，就地行功一个周天", "risk": "mid", "tag": "cultivate"},
+                {"text": "以指为笔，将口诀默录于随身玉简", "risk": "low", "tag": "other"},
+                {"text": "下山寻访故人所说的那处灵穴", "risk": "high", "tag": "explore"},
+            ],
+            "delta": _deepish_copy(zero),
+            "memory": "故人传功，修为大进",
+        }
+    return None
+
+
 MOCK_EVENTS = [
     {
         "narrative": "山道渐陡，暮色四合。转过一片乱石岗，你望见崖下有篝火明灭——是一支歇脚的行商队。为首的老者远远瞧见你背上的剑，扬声招呼：\"小道友，荒山夜路凶险，来喝口热汤罢。\"火光旁，几名护卫正不动声色地打量着你。",
@@ -983,6 +1190,18 @@ MOCK_EVENTS = [
         "delta": {"hp": -4, "qi": -5, "exp": 8, "spirit_stones": 0,
                   "items_add": [], "items_remove": []},
         "memory": "暴雨中避入岩檐，发现壁后石缝",
+    },
+    {
+        "narrative": "暮色里一声唿哨，三名蒙面人自林中掠出，为首者周身灵压阴冷，显然不是寻常剪径之辈。\"留下灵石，饶你不死。\"他话音未落，掌中已凝起一团碧幽幽的磷火。你按住剑柄，缓缓后退半步，将气息沉入丹田。",
+        "choices": [
+            {"text": "拔剑迎上，先发制人", "risk": "high", "tag": "fight"},
+            {"text": "示弱周旋，趁隙遁走", "risk": "mid", "tag": "other"},
+            {"text": "抛出几枚灵石，且战且退", "risk": "low", "tag": "trade"},
+        ],
+        "delta": {"hp": -2, "qi": -3, "exp": 5, "spirit_stones": 0,
+                  "items_add": [], "items_remove": []},
+        "npc_updates": [{"name": "碧磷老怪", "title": "蒙道人", "delta": -12}],
+        "memory": "暮色山道遇蒙道人拦路",
     },
 ]
 
@@ -1100,6 +1319,7 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str):
         memory_line = memory_line or "重伤濒死"
         near_death_flag = True
     npc_events = apply_npc_updates(state, data)
+    check_npc_events(state)
     choices = normalize_choices(data.get("choices"), state)
     state["turn"] += 1
     if memory_line:
@@ -1134,8 +1354,12 @@ def act(req: ActReq):
             state["spirit_root"] = roll_spirit_root()
             root_newly = True
 
-        # ① 天道判定（判定先行，AI 只负责叙述）
-        trial_text, trial = run_trial(state, action)
+        # ⓪'' 天机事件优先（故人赠宝/传功/死敌寻仇），无则走普通判定
+        trial_text, trial, event_fx = consume_pending_event(state)
+        if not trial and not event_fx:
+            trial_text, trial = run_trial(state, action)
+        if trial and trial.get("fight"):
+            event_fx = apply_fight(state, trial)  # 战斗效果纯代码结算
 
         # ② 筑基结局：手写文案，不容 AI 失手
         if trial and trial.get("ending"):
@@ -1173,9 +1397,10 @@ def act(req: ActReq):
             data, meta = generate_scene(state, action, trial_text, root_newly)
             narrative, choices, delta_applied, near_death_flag, npc_events = \
                 _postprocess_turn(state, data, meta, action_text)
+            _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
-        return {
-            "ok": True,
+            return {
+                "ok": True,
             "state": state,
             "narrative": narrative,
             "choices": choices,
@@ -1220,7 +1445,12 @@ def act_stream(req: ActReq):
                 state["spirit_root"] = roll_spirit_root()
                 root_newly = True
 
-            trial_text, trial = run_trial(state, action)
+            # ⓪'' 天机事件优先（故人赠宝/传功/死敌寻仇），无则走普通判定
+            trial_text, trial, event_fx = consume_pending_event(state)
+            if not trial and not event_fx:
+                trial_text, trial = run_trial(state, action)
+            if trial and trial.get("fight"):
+                event_fx = apply_fight(state, trial)  # 战斗效果纯代码结算
 
             # ② 筑基结局：手书文案切片流出
             if trial and trial.get("ending"):
@@ -1256,7 +1486,7 @@ def act_stream(req: ActReq):
                             yield _sse("retry", {"message": "天机紊乱，凝神重推……"})
                 else:
                     # ④' 演武模式：本地事件切片流出（统一前端路径）
-                    data = _deepish_copy(random.choice(MOCK_EVENTS))
+                    data = _mock_trial_scene(trial_text) or _deepish_copy(random.choice(MOCK_EVENTS))
                     meta = {"source": "mock", "model": "演武", "elapsed_ms": 30,
                             "retries": 0, "tokens_in": 0, "tokens_out": 0}
                     for piece in _slice_text(data["narrative"]):
@@ -1265,6 +1495,7 @@ def act_stream(req: ActReq):
             # ⑤~⑨ 与 /api/act 完全共用的后处理
             narrative, choices, delta_applied, near_death_flag, npc_events = \
                 _postprocess_turn(state, data, meta, action_text)
+            _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
             # 流式叙事是增量的，done 里带完整文本供前端静默校正
             yield _sse("done", {
