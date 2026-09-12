@@ -1,11 +1,11 @@
 # 墨问仙途 · 测试体系
 
-三层结构：**代码实现 → 已部署产物** 全覆盖，共 371 项用例。
+三层结构：**代码实现 → 已部署产物** 全覆盖，共 442 项用例。
 
 | 层 | 目录 | 工具 | 数量 | 测什么 |
 |---|---|---|---|---|
-| 后端单元 | `tests/backend` | pytest | 308 | 天道引擎的全部纯逻辑：数值/判定/经济/状态清洗/NPC/接口契约 |
-| 前端单元 | `tests/frontend` | vitest + happy-dom | 40 | 存档持久化、仙缘令编解码、前后端常量一致性 |
+| 后端单元 | `tests/backend` | pytest | 377 | 天道引擎的全部纯逻辑：数值/判定/经济/状态清洗/NPC/接口契约/修炼节奏 |
+| 前端单元 | `tests/frontend` | vitest + happy-dom | 65 | 存档持久化、仙缘令编解码、前后端常量一致性 |
 | 线上端到端 | `tests/online` | pytest + httpx | 23 | 打真实 Vercel：健康度、静态资源、坊市、用丹、SSE、真实 AI、结局回归 |
 
 ## 快速开始
@@ -50,3 +50,11 @@ conftest 里每个用例前固定 `random.seed`；需要精确命中档位时用
 **5. 两条入口口径一致。**
 `/api/act` 与 `/api/act/stream` 共用 `_postprocess_turn` 与 `_ending_payload`，
 两者对同一输入必须给出同构结果 —— 测试里有专门的比对用例守着这条线。
+
+**6. 玩家看见的数字必须是真数字。**
+`tests/backend/test_11_cultivation.py` 不仅测系数，还断言「所有单键到底的路线都跑不赢
+需要取舍的专注流」—— 否则玩家会立刻收敛到一键最优解，整套节奏设计形同虚设。
+`tests/frontend/cultivation.spec.ts` 则解析 `server.py` 的 `ACTION_CULTIVATE_COEFF`
+与 `CULTIVATE_STREAK_TABLE` 逐条比对前端展示表，并校验 `CultivateInfo` 覆盖后端 detail 的每个字段
+（后端加了字段、前端没接 → 界面会静默少显示一项）。冲关成功率提示与掷骰共用
+`breakthrough_rate`，避免「界面写 60%、实际掷 40%」这类最伤信任的偏差。

@@ -180,12 +180,156 @@ def spirit_root_info(name: Any) -> tuple[float, float]:
     return 1.0, 0.0
 
 
+def breakthrough_rate(state: dict) -> tuple[float, float]:
+    """返回 (真实成功率, 保底加成)。
+    掷骰（run_trial）与选项 hint 展示（normalize_choices）共用此式——玩家看见的概率必须就是掷的那一枚骰。"""
+    level = state["realm_index"]
+    _, root_mod = spirit_root_info(state.get("spirit_root"))
+    # 保底：连续突破失利，每败一次 +8% 成功率，封顶 +24%
+    pity = min(_to_int(state.get("fail_streak"), 0) * 0.08, 0.24)
+    return clamp(REALM_TABLE[level][2] + root_mod + pity, 0.05, 0.98), pity
+
+
 def grant_exp(state: dict, amount: int, source: str = "ai") -> int:
-    """统一的修为结算：所有正向经验都乘灵根系数（负向不受影响，惩罚公平）。"""
+    """统一的修为结算：所有正向经验都乘灵根系数（负向不受影响，惩罚公平）。
+    注：战斗/传功/服丹等非「本轮行动」来源只走这里；玩家主动行动所得修为
+    请走 cultivate_multiplier，它在此之上再叠加行动/连击/状态三层系数。"""
     if amount <= 0:
         return amount
     coeff, _ = spirit_root_info(state.get("spirit_root"))
     return int(amount * coeff)
+
+
+# ---------------------------------------------------------------- 修炼节奏（玩家选择驱动）
+# 设计意图：原先「选打坐」和「逛坊市」收益完全一样，300 轮主线毫无加速手段。
+# 这里把 AI 已输出却从未被消费的 choice.tag 接上真实数值，让取舍回到玩家手上。
+#   最终 exp = AI_base × 灵根 × 行动系数 × 连击加成 × 状态修正（向下取整）
+
+# 杠杆 1：行动类型系数——修得快就得放弃探索与机缘，反之亦然
+ACTION_CULTIVATE_COEFF = {
+    "cultivate": 1.8,   # 潜心修行：最高修炼效率，代价是错过外界机缘
+    "rest":      1.3,   # 静养调息：中上，兼顾状态回复
+    "fight":     1.2,   # 斗法拼杀：中等修炼，另有战利品
+    "explore":   1.0,   # 外出探索：基准线，附带随机机缘
+    "trade":     0.8,   # 坊市交易：修炼效率低，换来的是灵石
+    "other":     1.0,   # 随缘而行：基准
+}
+
+ACTION_CULTIVATE_LABEL = {
+    "cultivate": "潜心修行",
+    "rest": "静养调息",
+    "fight": "斗法拼杀",
+    "explore": "外出探索",
+    "trade": "坊市交易",
+    "other": "随缘而行",
+}
+
+VALID_TAGS = ("cultivate", "rest", "fight", "explore", "trade", "other", "breakthrough")
+
+# AI 偶尔会输出中文 tag（如"打坐"），此时整套系数会退化为基准——按关键词回推兜底
+TAG_KEYWORDS = (
+    # 注意：fight 会触发斗法掷骰，关键词刻意收紧，宁漏勿伤（"出手相助"不该打架）
+    ("fight", ("动手", "迎战", "应战", "厮杀", "搏杀", "斩杀", "击杀", "拼杀", "大打出手")),
+    ("trade", ("问价", "讨价", "还价", "交易", "典当", "买卖", "收购", "买下", "出手卖",
+               "置换", "买", "卖")),
+    ("cultivate", ("打坐", "行功", "参悟", "修炼", "吐纳", "运功", "凝神", "苦修", "感悟",
+                   "练气", "炼气", "闭关")),
+    ("rest", ("疗伤", "调息", "静养", "养伤", "歇息", "休息", "入睡")),
+    ("explore", ("赶路", "探查", "寻访", "深入", "前往", "打听", "翻检", "搜索", "追踪",
+                 "进山", "下山", "查探")),
+)
+
+
+def infer_action_tag(action: Any) -> str:
+    """推断本轮行动类型。tag 合法则直用，否则按选项文本关键词回推，最差退为 other。"""
+    if not isinstance(action, dict):
+        return "other"
+    tag = str(action.get("tag") or "").strip().lower()
+    if tag in VALID_TAGS:
+        return tag
+    # AI 偶尔输出中文 tag（如"打坐"），把它并进待匹配文本，避免整套机制退化
+    probe = (str(action.get("text", "")) + " " + tag)[:40]
+    for candidate, keywords in TAG_KEYWORDS:
+        if any(k in probe for k in keywords):
+            return candidate
+    return "other"
+
+
+# 杠杆 2：连击——连续专注修行有加成，制造「要不要再打坐一轮」的抉择
+CULTIVATE_TAGS = ("cultivate", "rest")
+CULTIVATE_STREAK_TABLE = ((0, 1.00), (2, 1.10), (3, 1.20), (5, 1.40))
+STREAK_CAP = 5             # 加成封顶：连修满 5 轮吃最高档 1.4
+STREAK_STORE_MAX = 12      # 字段存储上限（真实轮数，需大于 SECLUSION_STREAK 才能判定枯坐）
+
+# 连修保护：过封顶还枯坐＝闭门无功。注意门槛必须高于 STREAK_CAP，
+# 否则 1.4 档永远吃不到，又会变成「专心修行必被砍半」的假取舍。
+SECLUSION_STREAK = 6
+SECLUSION_DECAY = 0.6      # 每多枯坐一轮，效率再打六折
+SECLUSION_FLOOR = 0.3      # 衰减下限，不至于彻底卡死
+SECLUSION_HINT = "闭门日久，进境渐滞——该出去走走了。"
+
+# 单轮修为上限：任何境界都至少要两轮才能圆满，杜绝「天灵根+满连击」一轮破境
+SINGLE_TURN_EXP_CAP = 0.5
+
+
+def _cultivate_streak_coeff(state: dict) -> float:
+    """按已攒下的连修轮数取加成系数（超过最大阈值的一律吃最高档）。"""
+    streak = _to_int(state.get("cultivate_streak"), 0)
+    coeff = 1.0
+    for threshold, c in CULTIVATE_STREAK_TABLE:
+        if streak >= threshold:
+            coeff = c
+    return coeff
+
+
+def _seclusion_coeff(streak: int) -> float:
+    """闭门造车衰减：连修超过封顶后逐级打六折，逼玩家出门历练。未越界则为 1.0。"""
+    if streak < SECLUSION_STREAK:
+        return 1.0
+    return max(SECLUSION_FLOOR, SECLUSION_DECAY ** (streak - SECLUSION_STREAK + 1))
+
+
+def _update_cultivate_streak(state: dict, action_tag: str) -> None:
+    """修行类行动累加连击（超过存储上限不再增长），其余行动清零。"""
+    if action_tag in CULTIVATE_TAGS:
+        state["cultivate_streak"] = min(_to_int(state.get("cultivate_streak"), 0) + 1, STREAK_STORE_MAX)
+    else:
+        state["cultivate_streak"] = 0
+
+
+def _vitality_coeff(state: dict) -> float:
+    """杠杆 3：状态修正。满状态 1.0 / 半状态 0.85 / 濒死 0.7——让回血回灵有了修行意义。"""
+    hp_ratio = clamp(state["hp"] / max(state["hp_max"], 1), 0.0, 1.0)
+    qi_ratio = clamp(state["qi"] / max(state["qi_max"], 1), 0.0, 1.0)
+    return 0.7 + 0.3 * (hp_ratio * 0.5 + qi_ratio * 0.5)
+
+
+def cultivate_multiplier(state: dict, action_tag: str) -> tuple[float, dict]:
+    """本轮修为的总系数 = 灵根 × 行动 × 连击 × 状态 × 闭门惩罚。
+    返回 (系数, 明细)；明细直接进 engine_meta.cultivate，供前端把速度「摆给玩家看」。"""
+    root_coeff, _ = spirit_root_info(state.get("spirit_root"))
+    streak_now = _to_int(state.get("cultivate_streak"), 0)   # 用的是「本轮之前」攒下的连击
+    action_coeff = ACTION_CULTIVATE_COEFF.get(action_tag, 1.0)
+    # 连击与闭门只属于「修行」：出门一趟就把加成清零，不能攒满连击再切 explore 白拿
+    is_cultivating = action_tag in CULTIVATE_TAGS
+    streak_coeff = _cultivate_streak_coeff(state) if is_cultivating else 1.0
+    vitality_coeff = _vitality_coeff(state)
+    seclusion_coeff = _seclusion_coeff(streak_now) if is_cultivating else 1.0
+    total = root_coeff * action_coeff * streak_coeff * vitality_coeff * seclusion_coeff
+
+    detail = {
+        "coeff": round(total, 2),
+        "action": action_tag,
+        "action_label": ACTION_CULTIVATE_LABEL.get(action_tag, "随缘而行"),
+        "action_coeff": action_coeff,
+        "streak": min(streak_now, STREAK_CAP) if is_cultivating else 0,
+        "streak_coeff": streak_coeff,
+        "seclusion": round(seclusion_coeff, 2),
+        "vitality": round(vitality_coeff, 2),
+        "secluded": seclusion_coeff < 1.0,
+        "capped": False,
+    }
+    return total, detail
 
 
 
@@ -464,6 +608,7 @@ def sanitize_state(raw: dict) -> dict:
         "style_echo": style_echo,
         "pending_events": pending_events,
         "fail_streak": _int(raw.get("fail_streak"), 0, 20, 0),
+        "cultivate_streak": _int(raw.get("cultivate_streak"), 0, STREAK_STORE_MAX, 0),  # 连修轮数（连击加成）
         "last_near_death_turn": _int(raw.get("last_near_death_turn"), -999, 9999, -999),
         "turn": _int(raw.get("turn"), 0, 9999, 0),
     }
@@ -481,15 +626,11 @@ def run_trial(state: dict, action: dict) -> tuple[str, dict | None]:
     if level >= MAX_REALM_INDEX:
         return "无特殊判定（玩家已筑基），请依据玩家行动自然推进剧情。", None
     # 灵根影响冲关率（判定先行：资质厚薄，天道先知）
-    _, root_mod = spirit_root_info(state.get("spirit_root"))
-    # 保底：连续突破失利，每败一次 +8% 成功率，封顶 +24%
-    fail_streak = state.get("fail_streak", 0)
-    pity_bonus = min(fail_streak * 0.08, 0.24)
-    rate = clamp(REALM_TABLE[level][2] + root_mod + pity_bonus, 0.05, 0.98)
+    rate, pity_bonus = breakthrough_rate(state)
     ok = random.random() < rate
     pity_hint = ""
     if pity_bonus > 0:
-        pity_hint = f"（天道眷顾：连续突破失利{fail_streak}次，此番成功率提升{int(pity_bonus * 100)}%。）"
+        pity_hint = f"（天道眷顾：连续突破失利{_to_int(state.get('fail_streak'), 0)}次，此番成功率提升{int(pity_bonus * 100)}%。）"
     if level == 8 and ok:
         return "TRIGGER_ENDING", {"ending": True}
     next_name = realm_name(level + 1)
@@ -888,7 +1029,8 @@ def normalize_choices(raw: Any, state: dict) -> list:
             if not text:
                 continue
             risk = c.get("risk") if c.get("risk") in VALID_RISK else "mid"
-            tag = str(c.get("tag", "other"))[:12]
+            # tag 归一化：非法/中文 tag 按文本回推，保证「行动系数」这套机制不会退化
+            tag = infer_action_tag({"text": text, "tag": c.get("tag")})
             out.append({"id": "ABC"[len(out)], "text": text, "risk": risk, "tag": tag})
     while len(out) < 3:
         out.append({"id": "ABC"[len(out)], **random.choice(FILLER_CHOICES)})
@@ -896,12 +1038,18 @@ def normalize_choices(raw: Any, state: dict) -> list:
     # 修为圆满 → 注入「冲关」特殊选项（唯一能改变境界的通道）
     level = state["realm_index"]
     if level < MAX_REALM_INDEX and state["exp"] >= REALM_TABLE[level][1]:
+        # 把真实成功率摆到玩家眼前：看到的就是掷的那一枚骰（与 run_trial 同源）
+        rate, pity = breakthrough_rate(state)
+        hint = f"成功率约 {int(rate * 100)}%"
+        if pity > 0:
+            hint += f"（天道眷顾 +{int(pity * 100)}%）"
         out.append({
             "id": "BT",
             "text": f"闭关，冲击{realm_name(level + 1)}",
             "risk": "high",
             "tag": "breakthrough",
             "special": "breakthrough",
+            "hint": hint,
         })
     return out
 
@@ -919,6 +1067,14 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 1. 只输出一个 json 对象，不得有任何 json 以外的文字、注释或代码块标记。
 2. narrative：120~200 字，古典白话，禁止现代词汇与网络用语；必须与【本轮判定】严格一致，不得发明判定之外的结果。
 3. choices：恰好 3 个后续行动选项，text 不超过 24 字，其中至少一个 low 风险的稳妥选项；不出"继续"这类无意义选项。
+   每个选项必须给出 tag（只能用以下 6 个英文值），它决定本轮修行效率，务必与实际行动相符：
+   - cultivate：打坐、行功、参悟、修炼 → 修行最快
+   - rest：休息、疗伤、调息、静养 → 修行较快，兼复状态
+   - explore：赶路、探查、寻访、深入 → 基准速度，有机缘
+   - trade：买卖、讨价、交易、典当 → 修行最慢，但得灵石
+   - fight：动手、迎战、厮杀 → 修行较快，但有凶险
+   - other：以上皆不属
+   三个选项的 tag 要拉开区分（勿三个同 tag），让玩家能借此选择自己的修行节奏。
 4. delta：本轮数值变化，与剧情严格一致且幅度克制：hp、qi 变化不超过 ±30，exp 不超过 ±40，spirit_stones 变化不超过 ±80；无变化则全部为 0。
 5. items_add 最多 1 件物品，rarity 为"下品"（常见）、"中品"（偶尔）或"上品"（稀有，非大机缘不可得）；items_remove 只能移除玩家已有物品。品级影响药效，需与剧情匹配。
 6. 不得杀死主角（可重伤、可陷入绝境）；不得无剧情依据地赠送贵重之物。
@@ -1603,13 +1759,30 @@ def health():
     return {"ok": True, "mode": mode, "model": MODEL}
 
 
-def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str):
+def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
+                      action_tag: str = "other"):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
-    /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。"""
+    /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
+    action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。"""
     delta_applied = clamp_ai_delta(data.get("delta"), state)
     if delta_applied["exp"] > 0:
-        delta_applied["exp"] = grant_exp(state, delta_applied["exp"], source="ai")
+        # 修为结算：AI 原始值 → 灵根 × 行动 × 连击 × 状态（+ 闭门惩罚）
+        coeff, detail = cultivate_multiplier(state, action_tag)
+        base = delta_applied["exp"]
+        granted = int(base * coeff)
+        # 单轮保底两回合：任何境界不可能一轮圆满
+        cap = max(1, int(exp_max_of(state["realm_index"]) * SINGLE_TURN_EXP_CAP))
+        if granted > cap:
+            granted = cap
+            detail["capped"] = True
+        delta_applied["exp"] = granted
+        detail["base"] = base
+        meta["cultivate"] = detail
+        seclusion_hint = detail["secluded"]
+    else:
+        seclusion_hint = False
     apply_delta(state, delta_applied)
+    _update_cultivate_streak(state, action_tag)   # 连击在结算之后累加，本轮不吃自己
     # 修炼消耗（经济回收口）：每轮维持修为的灵气补给，灵石不足时不扣
     cost = cultivate_cost(state)
     if state["spirit_stones"] >= cost:
@@ -1627,6 +1800,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str):
         narrative = narrative + "\n\n" + NEAR_DEATH_TEXT
         memory_line = memory_line or "重伤濒死"
         near_death_flag = True
+    if seclusion_hint:
+        narrative = narrative + "\n\n" + SECLUSION_HINT
     npc_events = apply_npc_updates(state, data)
     check_npc_events(state)
     choices = normalize_choices(data.get("choices"), state)
@@ -1730,8 +1905,9 @@ def act(req: ActReq):
         breakthrough_view = apply_trial(state, trial)
         # ④ AI（或演武/兜底）生成剧情 ⑤~⑨ 后处理共用
         data, meta = generate_scene(state, action, trial_text, root_newly)
+        action_tag = infer_action_tag(action)
         narrative, choices, delta_applied, near_death_flag, npc_events = \
-            _postprocess_turn(state, data, meta, action_text)
+            _postprocess_turn(state, data, meta, action_text, action_tag)
         _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
         return {
@@ -1819,8 +1995,9 @@ def act_stream(req: ActReq):
                         yield _sse("delta", {"t": piece})
 
             # ⑤~⑨ 与 /api/act 完全共用的后处理
+            action_tag = infer_action_tag(action)
             narrative, choices, delta_applied, near_death_flag, npc_events = \
-                _postprocess_turn(state, data, meta, action_text)
+                _postprocess_turn(state, data, meta, action_text, action_tag)
             _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
             # 流式叙事是增量的，done 里带完整文本供前端静默校正

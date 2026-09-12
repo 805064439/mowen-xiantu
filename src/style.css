@@ -70,6 +70,24 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
 .item-chip:hover{border-color:var(--seal); color:var(--seal);}
 .item-empty{font-size:11.5px; color:var(--muted); letter-spacing:1px;}
 
+/* ---------- 状态卡 · 修行节奏（选择如何影响速度的常驻读数） ---------- */
+.stat-cult{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);
+  font-size:11.5px; letter-spacing:.5px;
+}
+.cult-label{font-size:10.5px; color:var(--muted); letter-spacing:4px; flex:none;}
+.cult-on{color:var(--gold);}
+.cult-bonus{color:var(--seal); font-weight:700;}
+.cult-off{color:var(--muted);}
+.cult-tip{color:var(--muted); opacity:.85;}
+.cult-warn{color:var(--seal); font-weight:700;}
+.cult-coeff{
+  margin-left:auto; font-variant-numeric:tabular-nums; font-size:11.5px;
+  color:var(--ink-soft); border:1px solid var(--line2); border-radius:99px; padding:0 8px;
+}
+.stat-cult.cult-secluded{border-top-color:rgba(166,58,43,.45);}
+
 /* ---------- 状态卡 · 江湖人物摘要 ---------- */
 .stat-npcs{
   display:flex; align-items:center; gap:6px; flex-wrap:wrap;
@@ -139,6 +157,23 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
 }
 .choice:hover:not(:disabled) .fx-badge{color:inherit;}
 @keyframes fxPulse{0%,100%{opacity:.55; transform:scale(1);} 50%{opacity:1; transform:scale(1.18);}}
+
+/* ---------- 行动类型徽标：让「选它会不会更快」在点之前就看得见 ---------- */
+.ctag{
+  display:inline-block; margin-left:8px; padding:1px 7px; white-space:nowrap;
+  font-size:11px; letter-spacing:.5px; border-radius:9px;
+  border:1px solid var(--line2); color:var(--muted); vertical-align:1px;
+  transition:color .18s, border-color .18s;
+}
+.ctag.tag-fast{border-color:rgba(154,123,45,.55); color:var(--gold);}
+.ctag.tag-slow{border-color:var(--line2); color:var(--muted); opacity:.85;}
+.chint{
+  display:block; margin-top:5px; font-size:12px;
+  color:var(--gold); letter-spacing:.5px;
+}
+.choice:hover:not(:disabled) .ctag{border-color:currentColor; color:inherit;}
+.choice:hover:not(:disabled) .chint{color:inherit; opacity:.9;}
+.choice.gold:hover:not(:disabled) .chint{color:#f7f3e6;}
 
 /* ---------- 自由输入 ---------- */
 #custom-input{display:flex; gap:8px; margin-top:11px;}

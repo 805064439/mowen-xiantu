@@ -3,7 +3,7 @@
 
 import { reactive, computed } from "vue";
 import type { GameAction, GameState, Choice, ActResponse, ScenePara, FloatItem, EngineMeta, NpcEvent } from "../game/types";
-import { REALMS, OPENING, INIT_CHOICES } from "../game/constants";
+import { REALMS, OPENING, INIT_CHOICES, coeffLabel } from "../game/constants";
 import {
   readSave, writeSave, removeSave, freshState, SAVE_KEY,
   loadReincarnations, saveReincarnations,
@@ -94,12 +94,16 @@ function floatText(text: string, cls = "") {
   }, 2500);
 }
 
-function floatDeltas(d: { hp?: number; qi?: number; exp?: number; spirit_stones?: number; items_add?: { name: string; qty: number }[]; items_remove?: { name: string; qty: number }[] }) {
+function floatDeltas(d: { hp?: number; qi?: number; exp?: number; spirit_stones?: number; items_add?: { name: string; qty: number }[]; items_remove?: { name: string; qty: number }[] }, meta?: EngineMeta | null) {
   const names: Record<string, string> = { hp: "气血", qi: "灵力", exp: "修为", spirit_stones: "灵石" };
+  const cult = meta?.cultivate;
   for (const k of ["hp", "qi", "exp", "spirit_stones"] as const) {
     const v = (d[k] ?? 0) | 0;
-    if (v > 0) floatText(`+${v} ${names[k]}`, "f-pos");
-    else if (v < 0) floatText(`${v} ${names[k]}`, "f-neg");
+    if (v > 0) {
+      // 修为是本作唯一的速度指标 —— 连同「这轮为什么这么多」一起说清楚
+      const suffix = k === "exp" && cult ? ` · ${cult.action_label} ${coeffLabel(cult.coeff)}` : "";
+      floatText(`+${v} ${names[k]}${suffix}`, "f-pos");
+    } else if (v < 0) floatText(`${v} ${names[k]}`, "f-neg");
   }
   (d.items_add || []).forEach(it => floatText(`获得 ${it.name}×${it.qty}`, "f-item"));
   (d.items_remove || []).forEach(it => floatText(`失去 ${it.name}×${it.qty}`, "f-neg"));
@@ -154,11 +158,15 @@ function applySceneEffects(d: ActResponse) {
     document.body.classList.add("near-death");
     setTimeout(() => document.body.classList.remove("near-death"), 1200);
   }
-  floatDeltas(d.delta_applied || {});
+  game.lastMeta = d.engine_meta;
+  floatDeltas(d.delta_applied || {}, d.engine_meta);
   floatNpcEvents(d.npc_events);
+  // 闭门造车：数值上已经在衰减，这里必须让玩家看见，否则只会觉得「莫名变慢」
+  if (d.engine_meta?.cultivate?.secluded) {
+    floatText("闭门日久，进境渐滞", "f-neg");
+  }
   game.state = d.state;
   game.choices = d.choices;
-  game.lastMeta = d.engine_meta;
   game.errorCard = null;
   game.inputLocked = false;        // 叙事完毕，恢复选项与自由输入
   if (d.ending && !game.ended) {

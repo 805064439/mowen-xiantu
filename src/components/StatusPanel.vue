@@ -2,7 +2,10 @@
 /* 状态卡：境界/灵根/三围条/灵石/物品栏（数值全来自后端权威 state） */
 import { computed } from "vue";
 import { game, actions } from "../stores/game";
-import { REALMS, EXP_MAX, itemInfo, canUseItem } from "../game/constants";
+import {
+  REALMS, EXP_MAX, itemInfo, canUseItem,
+  actionInfo, streakCoeff, seclusionCoeff, STREAK_CAP, SECLUSION_STREAK,
+} from "../game/constants";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const root = computed(() => game.state?.spirit_root || "");
@@ -34,6 +37,24 @@ const overflow = computed(() => {
 const shownNpcs = computed(() => (game.state?.npcs || []).slice(0, 3));
 const npcOverflow = computed(() => Math.max(0, (game.state?.npcs || []).length - 3));
 
+/* 修行节奏：把「速度」摆在玩家眼前 —— 这是本次优化的核心可感知点。
+   连修加成、闭门衰减、上一轮的行动与系数，三者合起来解释「我为什么快/慢」。 */
+const streak = computed(() => game.state?.cultivate_streak ?? 0);
+const streakPct = computed(() => Math.round((streakCoeff(streak.value) - 1) * 100));
+const secluded = computed(() => streak.value >= SECLUSION_STREAK);
+const seclusionLoss = computed(() =>
+  secluded.value ? Math.round((1 - seclusionCoeff(streak.value)) * 100) : 0);
+const lastCultivate = computed(() => game.lastMeta?.cultivate ?? null);
+const lastAction = computed(() => {
+  const c = lastCultivate.value;
+  return c ? actionInfo(c.action) : null;
+});
+const coeffTitle = computed(() => {
+  const c = lastCultivate.value;
+  if (!c) return "";
+  return `本轮修为 = ${c.base ?? "?"}（基础） × ${c.coeff}（灵根·行动·连击·状态）`;
+});
+
 function pct(v: number, max: number) {
   return Math.max(0, Math.min(100, v / max * 100)) + "%";
 }
@@ -55,6 +76,28 @@ function openDrawer() {
       <div class="bar-track"><div class="bar-fill" :style="{ width: pct(b.val, b.max) }"></div></div>
       <span class="bar-val">{{ b.val }}/{{ b.max }}</span>
     </div>
+    <div class="stat-cult" :class="{ 'cult-secluded': secluded }" v-if="game.state">
+      <span class="cult-label">修 行</span>
+      <template v-if="secluded">
+        <span class="cult-warn">闭门造车 · 进境 −{{ seclusionLoss }}%</span>
+        <span class="cult-tip">出门走动一轮即可恢复</span>
+      </template>
+      <template v-else-if="streak > 0">
+        <span class="cult-on">连修 {{ Math.min(streak, STREAK_CAP) }} 轮</span>
+        <span class="cult-bonus" v-if="streakPct > 0">+{{ streakPct }}%</span>
+        <span class="cult-tip" v-else>再连修一轮起有加成</span>
+      </template>
+      <template v-else>
+        <span class="cult-off">未修行</span>
+        <span class="cult-tip" v-if="lastAction">
+          上轮「{{ lastAction.label }}」 {{ lastAction.coeff >= 1 ? "+" : "" }}{{ Math.round((lastAction.coeff - 1) * 100) }}% 修为
+        </span>
+      </template>
+      <span class="cult-coeff" v-if="lastCultivate" :title="coeffTitle">
+        ×{{ lastCultivate.coeff }}
+      </span>
+    </div>
+
     <div class="stat-foot">
       <span class="stones">灵石 <b id="stones">{{ game.state?.spirit_stones ?? 0 }}</b></span>
       <span id="items">

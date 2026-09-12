@@ -65,9 +65,17 @@ class TestPostprocessPipeline:
         meta = {}
         narrative, choices, delta, nd, npc_ev = engine._postprocess_turn(
             s, {"delta": {"hp": 10, "exp": 10}, "choices": [], "narrative": "你略作调息。",
-                "memory": "调息养气"}, meta, "打坐")
+                "memory": "调息养气"}, meta, "打坐", "rest")
         assert s["hp"] == 60
-        assert s["exp"] == 20
+        # 修为 = 10 × 灵根(1.0) × 静养(1.3) × 连击(1.0) × 状态(半血 → 0.925) = 12.025 → 12
+        assert s["exp"] == 22
+        assert delta["exp"] == 12
+        assert meta["cultivate"]["coeff"] == 1.2
+        assert meta["cultivate"]["action_label"] == "静养调息"
+        # 状态修正 = 0.7 + 0.3 × (半血 0.5×0.5 + 满灵 1.0×0.5) = 0.925 → 回传两位小数
+        assert meta["cultivate"]["vitality"] == 0.92
+        # 连修一轮，连击计数已累加
+        assert s["cultivate_streak"] == 1
         assert delta["hp"] == 10
         # 修炼消耗：境界 0 → 1 灵石
         assert s["spirit_stones"] == 99
@@ -80,8 +88,8 @@ class TestPostprocessPipeline:
     def test_exp_gain_uses_spirit_root_coefficient(self, engine, base_state):
         s = engine.sanitize_state({**base_state, "spirit_root": "天灵根·火"})
         _, _, delta, _, _ = engine._postprocess_turn(
-            s, {"delta": {"exp": 20}, "choices": [], "narrative": "悟道", "memory": "m"}, {}, "参悟")
-        assert delta["exp"] == 32      # 20 × 1.6
+            s, {"delta": {"exp": 20}, "choices": [], "narrative": "悟道", "memory": "m"}, {}, "随缘", "other")
+        assert delta["exp"] == 32      # 20 × 1.6（满状态、无连击、随缘→其余系数均为 1.0）
 
     def test_exp_loss_bypasses_coefficient(self, engine, base_state):
         s = engine.sanitize_state({**base_state, "spirit_root": "天灵根·火", "exp": 50})

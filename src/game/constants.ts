@@ -102,3 +102,56 @@ export function itemInfo(name: string): ItemInfo {
 export function canUseItem(name: string): boolean {
   return ITEM_INFO[name]?.kind === "pill";
 }
+
+/* -----------------------------------------------------------------------
+   修炼节奏：与后端 server.py 的 ACTION_CULTIVATE_COEFF / CULTIVATE_STREAK_TABLE
+   同源（数值改动须两边一起改，tests/frontend/cultivation.spec.ts 逐条盯着）。
+
+   玩家选什么，修行就有多快——这里只负责把它翻译成人话给玩家看。
+   ----------------------------------------------------------------------- */
+export interface ActionInfo {
+  label: string;   // 行动类型中文名
+  coeff: number;   // 修炼系数
+  note: string;    // 一句话取舍说明
+}
+
+export const ACTION_INFO: Record<string, ActionInfo> = {
+  cultivate: { label: "潜心修行", coeff: 1.8, note: "修行最快，代价是错过外界机缘" },
+  rest: { label: "静养调息", coeff: 1.3, note: "修行较快，兼顾回复气血灵力" },
+  fight: { label: "斗法拼杀", coeff: 1.2, note: "修行不慢，另有战利品，但凶险" },
+  explore: { label: "外出探索", coeff: 1.0, note: "基准速度，附带随机机缘" },
+  trade: { label: "坊市交易", coeff: 0.8, note: "修行最慢，换来的是灵石" },
+  other: { label: "随缘而行", coeff: 1.0, note: "不偏不倚的基准速度，既无加成也无损失" },
+};
+
+/** 取行动说明；未知 tag 一律按「随缘而行」，不编造加成 */
+export function actionInfo(tag?: string): ActionInfo {
+  return ACTION_INFO[tag ?? ""] ?? ACTION_INFO.other;
+}
+
+/** 连修加成表：轮数 → 系数（与后端 CULTIVATE_STREAK_TABLE 一致） */
+export const STREAK_TABLE: [number, number][] = [[0, 1.0], [2, 1.1], [3, 1.2], [5, 1.4]];
+export const STREAK_CAP = 5;          // 加成封顶轮数
+export const SECLUSION_STREAK = 6;    // 越此轮数起「闭门造车」，效率衰减
+export const SECLUSION_DECAY = 0.6;
+export const SECLUSION_FLOOR = 0.3;
+
+/** 当前连修轮数对应的加成系数（只用于展示，真值以后端为准） */
+export function streakCoeff(streak: number): number {
+  let c = 1.0;
+  for (const [threshold, v] of STREAK_TABLE) {
+    if (streak >= threshold) c = v;
+  }
+  return c;
+}
+
+/** 闭门衰减系数：与后端 _seclusion_coeff 同式 */
+export function seclusionCoeff(streak: number): number {
+  if (streak < SECLUSION_STREAK) return 1.0;
+  return Math.max(SECLUSION_FLOOR, SECLUSION_DECAY ** (streak - SECLUSION_STREAK + 1));
+}
+
+/** 把系数写成飘字用的短标签：「潜心修行 ×2.39」 */
+export function coeffLabel(coeff: number): string {
+  return `×${coeff.toFixed(2)}`;
+}

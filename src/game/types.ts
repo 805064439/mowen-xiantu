@@ -31,6 +31,7 @@ export interface GameState {
   style_echo?: string[];  // 最近开篇回声（防 AI 复读）
   pending_events?: PendingEvent[];  // 待结算天机事件（赠宝/传功/寻仇）
   fail_streak?: number;             // 连续突破失败次数（保底依据）
+  cultivate_streak?: number;        // 连修轮数（连击加成；出门即断）
   last_near_death_turn?: number;    // 上次濒死轮次（冷却判定）
   turn: number;
 }
@@ -59,6 +60,7 @@ export interface Choice {
   risk: Risk;
   tag?: string;
   special?: string;
+  hint?: string;   // 附带提示（如冲关成功率）
 }
 
 export interface DeltaApplied {
@@ -70,6 +72,21 @@ export interface DeltaApplied {
   items_remove: GameItem[];
 }
 
+/** 本轮修炼系数明细（engine_meta.cultivate）——把"速度"摆给玩家看 */
+export interface CultivateInfo {
+  coeff: number;         // 综合系数
+  action: string;        // 生效的行动 tag
+  action_label: string;  // 行动中文名（潜心修行…）
+  action_coeff: number;  // 行动系数
+  streak: number;        // 结算时已攒的连修轮数
+  streak_coeff: number;  // 连击系数
+  seclusion: number;     // 闭门衰减系数（1.0 = 未衰减）
+  vitality: number;      // 状态修正
+  secluded: boolean;     // 是否处于闭门造车状态
+  capped: boolean;       // 是否被单轮上限截断
+  base?: number;         // AI 给出的原始修为（未乘系数）
+}
+
 export interface EngineMeta {
   source: string;
   model?: string;
@@ -78,6 +95,7 @@ export interface EngineMeta {
   tokens_in?: number;
   tokens_out?: number;
   memory_compressed?: boolean;
+  cultivate?: CultivateInfo;   // 本轮修炼节奏明细
 }
 
 export interface ActResponse {
