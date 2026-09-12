@@ -1,4 +1,0 @@
-chore: 移除误提交的 pnpm 临时文件并加入忽略
-
-pnpm install 会在项目根留下 _tmp_<random> 空文件，上一次 add -A 时被一并提交。
-该文件无内容、无用途，加入 .gitignore 避免再次混入。
