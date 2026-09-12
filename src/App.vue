@@ -16,6 +16,7 @@ import StatusDrawer from "./components/StatusDrawer.vue";
 import BackToNow from "./components/BackToNow.vue";
 import SaveCodeModal from "./components/SaveCodeModal.vue";
 import ShopModal from "./components/ShopModal.vue";
+import ItemDetail from "./components/ItemDetail.vue";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const isHeavenRoot = computed(() => (game.state?.spirit_root || "").startsWith("天灵根"));
@@ -71,4 +72,5 @@ onMounted(() => { actions.init(); });
   <BackToNow />
   <SaveCodeModal v-if="game.saveCodeOpen" />
   <ShopModal v-if="game.shopOpen" />
+  <ItemDetail v-if="game.itemDetail" />
 </template>

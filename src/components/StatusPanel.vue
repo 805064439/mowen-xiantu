@@ -2,7 +2,7 @@
 /* 状态卡：境界/灵根/三围条/灵石/物品栏（数值全来自后端权威 state） */
 import { computed } from "vue";
 import { game, actions } from "../stores/game";
-import { REALMS, EXP_MAX } from "../game/constants";
+import { REALMS, EXP_MAX, itemInfo, canUseItem } from "../game/constants";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const root = computed(() => game.state?.spirit_root || "");
@@ -38,8 +38,9 @@ function pct(v: number, max: number) {
   return Math.max(0, Math.min(100, v / max * 100)) + "%";
 }
 
-function useItem(name: string) {
-  actions.act({ type: "use_item", name });
+/* 点道具不再直接服用：先看详情（功效/说明），在弹窗里再决定服不服 */
+function openItem(name: string) {
+  game.itemDetail = name;
 }
 
 function openDrawer() {
@@ -62,7 +63,9 @@ function openDrawer() {
         </template>
         <template v-else>
           <button v-for="it in shownItems" :key="it.name" type="button" class="item-chip"
-                  :title="'点击尝试服用 / 查看'" @click="useItem(it.name)">
+                  :class="{ usable: canUseItem(it.name) }"
+                  :title="`${itemInfo(it.name).effect}\n点击查看功效与说明`"
+                  @click="openItem(it.name)">
             {{ it.name }}×{{ it.qty }}
           </button>
           <span v-if="overflow" class="item-empty">…等{{ overflow }}件</span>

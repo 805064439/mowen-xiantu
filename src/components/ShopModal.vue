@@ -2,6 +2,7 @@
 /* 坊市：固定价格买卖（经济锚点，纯后端裁决不掷骰）。买入按表，卖出五折。 */
 import { computed } from "vue";
 import { game, actions } from "../stores/game";
+import { itemInfo } from "../game/constants";
 
 const SHOP_PRICES: { name: string; price: number }[] = [
   { name: "凝气丹", price: 40 },
@@ -41,6 +42,7 @@ function sell(name: string) {
           <span class="shop-price">{{ p.price }} 灵石</span>
           <button type="button" class="sc-btn shop-op" :disabled="game.loading || stones < p.price"
                   @click="buy(p.name)">买</button>
+          <span class="shop-eff">{{ itemInfo(p.name).effect }}</span>
         </li>
       </ul>
 

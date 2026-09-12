@@ -33,6 +33,7 @@ export const game = reactive({
   statusDrawerOpen: false,   // 全状态抽屉（点吸顶迷你条唤起）
   saveCodeOpen: false,       // 仙缘令弹窗（存档导入导出）
   shopOpen: false,           // 坊市弹窗（固定价格买卖）
+  itemDetail: null as string | null,  // 道具详情弹窗（物品名；null = 关闭）
 });
 
 /* ---------------- 打字机 ---------------- */

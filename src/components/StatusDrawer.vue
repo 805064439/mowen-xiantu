@@ -2,8 +2,8 @@
 /* 全状态抽屉：点吸顶条唤起，底部滑出。
    三围/背包实时响应（用丹不关抽屉，连嗑），物品点击直接服用。 */
 import { computed, ref, watch, onBeforeUnmount } from "vue";
-import { game, actions } from "../stores/game";
-import { REALMS, EXP_MAX } from "../game/constants";
+import { game } from "../stores/game";
+import { REALMS, EXP_MAX, itemInfo, canUseItem } from "../game/constants";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const root = computed(() => game.state?.spirit_root || "");
@@ -43,9 +43,10 @@ function pct(v: number, max: number) {
   return Math.max(0, Math.min(100, v / max * 100)) + "%";
 }
 
-function useItem(name: string) {
+/* 点道具先看详情（功效/说明），在弹窗里再决定服不服 —— 抽屉不关闭，可连着查看 */
+function openItem(name: string) {
   if (game.loading) return;
-  actions.act({ type: "use_item", name });
+  game.itemDetail = name;
 }
 
 function close() { game.statusDrawerOpen = false; }
@@ -97,12 +98,17 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
       <div class="drawer-items">
         <template v-if="(game.state?.items || []).length">
           <button v-for="it in game.state?.items" :key="it.name" type="button" class="item-chip"
-                  :disabled="game.loading" title="点击尝试服用 / 查看" @click="useItem(it.name)">
+                  :class="{ usable: canUseItem(it.name) }"
+                  :title="`${itemInfo(it.name).effect}\n点击查看功效与说明`"
+                  @click="openItem(it.name)">
             {{ it.name }}×{{ it.qty }}
           </button>
         </template>
         <span v-else class="item-empty">身无长物</span>
       </div>
+      <p class="items-tip" v-if="(game.state?.items || []).length">
+        朱红者可服用，点击任意一件查看功效 · 丹药按当前上限比例生效
+      </p>
 
       <div class="drawer-npcs" v-if="npcs.length">
         <div class="dn-title">江 湖 人 物</div>
