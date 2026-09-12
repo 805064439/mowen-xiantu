@@ -56,6 +56,27 @@ def request_with_retry(client, method, url, **kw):
     raise AssertionError(f"线上请求连续失败 {MAX_RETRY} 次: {last}")
 
 
+def consume_stream(client, payload):
+    """消费一次 SSE，返回 [(event, data), ...]。"""
+    with client.stream("POST", "/api/act/stream", json=payload) as resp:
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        frames, buf = [], ""
+        for chunk in resp.iter_text():
+            buf += chunk
+            while "\n\n" in buf:
+                frame, buf = buf.split("\n\n", 1)
+                event, data = None, None
+                for line in frame.split("\n"):
+                    if line.startswith("event: "):
+                        event = line[7:].strip()
+                    elif line.startswith("data: "):
+                        data = json.loads(line[6:])
+                if event:
+                    frames.append((event, data))
+    return frames
+
+
 def fresh_state(**over):
     """与前端 INIT_STATE 对齐的开局档。"""
     s = {
@@ -207,27 +228,8 @@ class TestOnlineUseItem:
 
 # ---------------------------------------------------------------- SSE 流式
 class TestOnlineStream:
-    def _consume(self, client, payload):
-        with client.stream("POST", "/api/act/stream", json=payload) as resp:
-            assert resp.status_code == 200
-            assert "text/event-stream" in resp.headers["content-type"]
-            frames, buf = [], ""
-            for chunk in resp.iter_text():
-                buf += chunk
-                while "\n\n" in buf:
-                    frame, buf = buf.split("\n\n", 1)
-                    event, data = None, None
-                    for line in frame.split("\n"):
-                        if line.startswith("event: "):
-                            event = line[7:].strip()
-                        elif line.startswith("data: "):
-                            data = json.loads(line[6:])
-                    if event:
-                        frames.append((event, data))
-            return frames
-
     def test_use_item_streams(self, http):
-        frames = self._consume(http, {
+        frames = consume_stream(http, {
             "state": fresh_state(hp=20, items=[{"name": "回气丹", "qty": 1, "rarity": "下品"}]),
             "action": {"type": "use_item", "name": "回气丹"},
         })
@@ -245,7 +247,7 @@ class TestOnlineStream:
             "action": {"type": "use_item", "name": "回气丹"},
         }
         plain = request_with_retry(http, "POST", "/api/act", json=payload).json()
-        done = self._consume(http, payload)[-1][1]
+        done = consume_stream(http, payload)[-1][1]
         assert set(plain) == set(done)
         assert plain["state"] == done["state"]
         assert plain["narrative"] == done["narrative"]
@@ -337,38 +339,41 @@ class TestOnlineEnding:
         assert ending["choices"]
 
     def test_stream_ending_matches_non_stream(self, http):
-        """结局处的两条入口必须给出同构结果。"""
-        s = fresh_state(realm_index=8, exp=800, hp=244, hp_max=244, qi=119, qi_max=119,
-                        spirit_stones=100, spirit_root="天灵根·火")
-        for _ in range(30):
-            plain = request_with_retry(http, "POST", "/api/act", json={
-                "state": s, "action": {"type": "breakthrough"},
-            }).json()
-            if plain and plain.get("ending"):
-                frames = []
-                with http.stream("POST", "/api/act/stream", json={
-                    "state": s, "action": {"type": "breakthrough"},
-                }) as resp:
-                    buf = ""
-                    for chunk in resp.iter_text():
-                        buf += chunk
-                        while "\n\n" in buf:
-                            frame, buf = buf.split("\n\n", 1)
-                            event, data = None, None
-                            for line in frame.split("\n"):
-                                if line.startswith("event: "):
-                                    event = line[7:].strip()
-                                elif line.startswith("data: "):
-                                    data = json.loads(line[6:])
-                            if event == "done":
-                                frames.append(data)
-                assert frames, "流式结局未产出 done 帧"
-                stream = frames[-1]
-                assert stream is not None, "流式结局返回了 null"
-                assert stream["ending"] is True
-                assert stream["state"]["turn"] == plain["state"]["turn"]
-                assert stream["state"]["memory"] == plain["state"]["memory"]
-                return
-            s = plain["state"]
-            s["exp"] = 800
-        pytest.skip("未撞到成功判定，跳过两路一致性比对")
+        """结局处的两条入口必须给出同构结果。
+
+        注意：突破是**随机判定**（实测成功率约三到五成），所以不能假定
+        「同一份存档在非流式撞到成功后，流式也必然成功」——那样写会得到
+        一条时红时绿的用例。这里让两路各自反复冲击，直到都撞到结局再比对，
+        且每次都从同一份快照起手，避免失败轮折损的修为污染起点。
+        """
+        import copy
+
+        base = fresh_state(realm_index=8, exp=800, hp=244, hp_max=244, qi=119, qi_max=119,
+                           spirit_stones=100, spirit_root="天灵根·火")
+
+        def hit_ending(via_stream: bool):
+            for _ in range(40):
+                payload = {"state": copy.deepcopy(base), "action": {"type": "breakthrough"}}
+                if via_stream:
+                    frames = consume_stream(http, payload)
+                    data = frames[-1][1] if frames else None
+                else:
+                    data = request_with_retry(http, "POST", "/api/act", json=payload).json()
+                assert data is not None, "结局分支返回了 null —— 历史缺陷复发"
+                if data.get("ending"):
+                    return data
+            return None
+
+        plain = hit_ending(False)
+        if plain is None:
+            pytest.skip("40 次冲击内非流式未撞到结局（纯概率）")
+        stream = hit_ending(True)
+        if stream is None:
+            pytest.skip("40 次冲击内流式未撞到结局（纯概率）")
+
+        assert stream["ending"] is True
+        assert set(plain) == set(stream), "两条入口的结局字段不一致"
+        assert stream["state"]["turn"] == plain["state"]["turn"]
+        assert stream["state"]["memory"] == plain["state"]["memory"]
+        assert stream["narrative"] == plain["narrative"]
+        assert stream["engine_meta"]["source"] == "ending"
