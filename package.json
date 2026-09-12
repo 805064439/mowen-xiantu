@@ -8,18 +8,26 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "vue-tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:py": "python -m pytest tests/backend -q",
+    "test:e2e": "python -m pytest tests/online -q -s",
+    "test:all": "vitest run && python -m pytest tests/backend -q"
   },
   "dependencies": {
     "vue": "^3.4.27"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",
+    "happy-dom": "^15.11.7",
     "typescript": "^5.4.5",
     "vite": "^5.2.11",
+    "vitest": "^2.1.8",
     "vue-tsc": "^2.0.19"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

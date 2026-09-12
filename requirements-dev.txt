@@ -1,0 +1,6 @@
+# 测试专用依赖（生产运行只需要根目录下的 requirements.txt：fastapi / uvicorn / openai）
+#
+# 安装：
+#     pip install -r requirements-dev.txt
+pytest>=8.0
+httpx>=0.27          # fastapi.testclient 依赖

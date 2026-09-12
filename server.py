@@ -357,7 +357,7 @@ def _to_int(v: Any, default: int = 0) -> int:
         if isinstance(v, bool):
             return default
         return int(float(v))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # JSON 可解析出 ±inf / nan 字面量
         return default
 
 
@@ -369,6 +369,10 @@ def _deepish_copy(d: dict) -> dict:
 def sanitize_state(raw: dict) -> dict:
     def _int(v, lo, hi, d):
         return clamp(_to_int(v, d), lo, hi)
+
+    # 脏输入（None / 数组 / 字符串）一律视为空档，绝不让异常穿透到接口层
+    if not isinstance(raw, dict):
+        raw = {}
 
     realm_index = _int(raw.get("realm_index"), 0, MAX_REALM_INDEX, 0)
     hp_max = _int(raw.get("hp_max"), 100, 400, hp_max_of(realm_index))
@@ -1050,6 +1054,7 @@ def handle_use_item(state: dict, req: "ActReq") -> dict:
             "choices": sanitize_last_choices(req.last_choices, state),
             "delta_applied": {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
                               "items_add": [], "items_remove": []},
+            "npc_events": [],   # 用丹不产生道缘变化，但字段必须与 /api/act 同构
             "breakthrough": None, "near_death": False, "ending": False,
             "engine_meta": {"source": "item", "model": "天道手书", "elapsed_ms": 5,
                             "retries": 0, "tokens_in": 0, "tokens_out": 0},
@@ -1079,6 +1084,7 @@ def handle_use_item(state: dict, req: "ActReq") -> dict:
         "narrative": narrative,
         "choices": sanitize_last_choices(req.last_choices, state),
         "delta_applied": d,
+        "npc_events": [],     # 用丹路经与 /api/act 保持字段一致，前端无需分支判断
         "breakthrough": None,
         "near_death": False,
         "ending": False,
@@ -1527,6 +1533,51 @@ def near_death_protocol(state: dict) -> dict:
     }
 
 
+def _ending_payload(state: dict, action_text: str) -> dict:
+    """筑基结局：数值结算与簿记在此一次性完成，/api/act 与 /api/act/stream 共用。
+
+    单独抽成函数而非各自内联，是为了从代码层面钉死「两路簿记永不分叉」——
+    此前 stream 路径会额外叠加一次常规后处理，导致轮次、记忆与修炼消耗重复记账。
+    """
+    state["realm_index"] = MAX_REALM_INDEX
+    state["exp"] = 0
+    state["hp_max"] += 30
+    state["qi_max"] += 15
+    state["hp"] = state["hp_max"]
+    state["qi"] = state["qi_max"]
+
+    narrative = ENDING_TEXT
+    memory_line = "冲击筑基功成，踏入筑基初期"
+    meta = {"source": "ending", "model": "天道手书", "elapsed_ms": 0,
+            "retries": 0, "tokens_in": 0, "tokens_out": 0}
+
+    state["turn"] += 1
+    state["memory"].append(memory_line)
+    state["memory"] = state["memory"][-20:]
+    state["recent"].append({"action": action_text, "narrative": narrative[:400]})
+    state["recent"] = state["recent"][-2:]
+    update_style_echo(state, narrative)
+    try:
+        if compress_memory(state):
+            meta["memory_compressed"] = True
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "state": state,
+        "narrative": narrative,
+        "choices": _deepish_copy(ENDING_CHOICES),
+        "delta_applied": {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
+                          "items_add": [], "items_remove": []},
+        "npc_events": [],
+        "breakthrough": {"success": True, "from": realm_name(8), "to": FOUNDATION},
+        "near_death": False,
+        "ending": True,
+        "engine_meta": meta,
+    }
+
+
 # ---------------------------------------------------------------- 接口
 app = FastAPI(title="墨问仙途 · 天道引擎", docs_url=None, redoc_url=None)
 app.add_middleware(
@@ -1671,46 +1722,20 @@ def act(req: ActReq):
         if trial and trial.get("fight"):
             event_fx = apply_fight(state, trial)  # 战斗效果纯代码结算
 
-        # ② 筑基结局：手写文案，不容 AI 失手
+        # ② 筑基结局：手写文案，不容 AI 失手（两路共用同一份簿记）
         if trial and trial.get("ending"):
-            state["realm_index"] = MAX_REALM_INDEX
-            state["exp"] = 0
-            state["hp_max"] += 30
-            state["qi_max"] += 15
-            state["hp"] = state["hp_max"]
-            state["qi"] = state["qi_max"]
-            breakthrough_view = {"success": True, "from": realm_name(8), "to": FOUNDATION}
-            narrative = ENDING_TEXT
-            choices = _deepish_copy(ENDING_CHOICES)
-            memory_line = "冲击筑基功成，踏入筑基初期"
-            delta_applied = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
-                             "items_add": [], "items_remove": []}
-            meta = {"source": "ending", "model": "天道手书", "elapsed_ms": 0,
-                    "retries": 0, "tokens_in": 0, "tokens_out": 0}
-            near_death_flag = False
-            state["turn"] += 1
-            state["memory"].append(memory_line)
-            state["memory"] = state["memory"][-20:]
-            state["recent"].append({"action": action_text, "narrative": narrative[:400]})
-            state["recent"] = state["recent"][-2:]
-            update_style_echo(state, narrative)
-            try:
-                if compress_memory(state):
-                    meta["memory_compressed"] = True
-            except Exception:
-                pass
-            npc_events = []
-        else:
-            # ③ 应用突破判定（纯代码层）
-            breakthrough_view = apply_trial(state, trial)
-            # ④ AI（或演武/兜底）生成剧情 ⑤~⑨ 后处理共用
-            data, meta = generate_scene(state, action, trial_text, root_newly)
-            narrative, choices, delta_applied, near_death_flag, npc_events = \
-                _postprocess_turn(state, data, meta, action_text)
-            _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
+            return _ending_payload(state, action_text)
 
-            return {
-                "ok": True,
+        # ③ 应用突破判定（纯代码层）
+        breakthrough_view = apply_trial(state, trial)
+        # ④ AI（或演武/兜底）生成剧情 ⑤~⑨ 后处理共用
+        data, meta = generate_scene(state, action, trial_text, root_newly)
+        narrative, choices, delta_applied, near_death_flag, npc_events = \
+            _postprocess_turn(state, data, meta, action_text)
+        _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
+
+        return {
+            "ok": True,
             "state": state,
             "narrative": narrative,
             "choices": choices,
@@ -1762,22 +1787,13 @@ def act_stream(req: ActReq):
             if trial and trial.get("fight"):
                 event_fx = apply_fight(state, trial)  # 战斗效果纯代码结算
 
-            # ② 筑基结局：手书文案切片流出
+            # ② 筑基结局：手书文案（与 /api/act 共用同一份簿记）
             if trial and trial.get("ending"):
-                state["realm_index"] = MAX_REALM_INDEX
-                state["exp"] = 0
-                state["hp_max"] += 30
-                state["qi_max"] += 15
-                state["hp"] = state["hp_max"]
-                state["qi"] = state["qi_max"]
-                breakthrough_view = {"success": True, "from": realm_name(8), "to": FOUNDATION}
-                narrative = ENDING_TEXT
-                data = {"narrative": narrative, "choices": _deepish_copy(ENDING_CHOICES),
-                        "delta": {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
-                                  "items_add": [], "items_remove": []},
-                        "memory": "冲击筑基功成，踏入筑基初期"}
-                meta = {"source": "ending", "model": "天道手书", "elapsed_ms": 0,
-                        "retries": 0, "tokens_in": 0, "tokens_out": 0}
+                payload = _ending_payload(state, action_text)
+                for piece in _slice_text(payload["narrative"]):
+                    yield _sse("delta", {"t": piece})
+                yield _sse("done", payload)
+                return
             else:
                 breakthrough_view = apply_trial(state, trial)
                 if API_KEY and _OPENAI_OK:
