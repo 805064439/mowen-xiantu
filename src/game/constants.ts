@@ -5,7 +5,7 @@ export const REALMS = [
   "炼气六层", "炼气七层", "炼气八层", "炼气九层", "筑基初期",
 ];
 
-export const EXP_MAX = [100, 120, 150, 180, 220, 270, 330, 400, 500, 9999];
+export const EXP_MAX = [100, 130, 170, 260, 330, 400, 580, 680, 800, 9999];
 
 export const INIT_STATE = {
   realm_index: 0, hp: 100, hp_max: 100, qi: 50, qi_max: 50,

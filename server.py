@@ -61,19 +61,24 @@ if API_KEY and not _OPENAI_OK:
 
 # ---------------------------------------------------------------- 境界表
 # (境界名, 升层所需修为, 冲关成功率)  —— 第 9 项的 rate 是「九层冲击筑基」的概率
+# 阶梯式壁障：三层→四层、六层→七层为瓶颈，九层冲筑基为大壁障
 REALM_TABLE = [
-    ("炼气一层", 100, 0.95),
-    ("炼气二层", 120, 0.90),
-    ("炼气三层", 150, 0.85),
-    ("炼气四层", 180, 0.80),
-    ("炼气五层", 220, 0.75),
-    ("炼气六层", 270, 0.70),
-    ("炼气七层", 330, 0.65),
-    ("炼气八层", 400, 0.60),
-    ("炼气九层", 500, 0.35),
+    ("炼气一层", 100, 0.95),    # 新手起步
+    ("炼气二层", 130, 0.90),    # +30%
+    ("炼气三层", 170, 0.85),    # +31%
+    ("炼气四层", 260, 0.70),    # ← 第一壁障：修为 +53%，成功率骤降
+    ("炼气五层", 330, 0.65),    # +27%
+    ("炼气六层", 400, 0.60),    # +21%
+    ("炼气七层", 580, 0.45),    # ← 第二壁障：修为 +45%，成功率骤降
+    ("炼气八层", 680, 0.40),    # +17%
+    ("炼气九层", 800, 0.25),    # +18%，大壁障前夜
 ]
 FOUNDATION = "筑基初期"
 MAX_REALM_INDEX = 9  # 0~8 炼气，9 筑基（第一章终点）
+
+# HP/Qi 突破成长表：壁障层级跳跃大（炼气1→2 ... 9→筑基）
+HP_GAINS = [12, 12, 15, 20, 15, 15, 25, 20, 30]
+QI_GAINS = [6, 6, 8, 10, 8, 8, 12, 10, 15]
 
 
 def realm_name(i: int) -> str:
@@ -84,8 +89,61 @@ def exp_max_of(i: int) -> int:
     return REALM_TABLE[i][1] if i < 9 else 9999
 
 
+def hp_max_of(realm_index: int) -> int:
+    total = 100  # 初始
+    for i in range(realm_index):
+        total += HP_GAINS[i] if i < len(HP_GAINS) else 10
+    return total
+
+
+def qi_max_of(realm_index: int) -> int:
+    total = 50  # 初始
+    for i in range(realm_index):
+        total += QI_GAINS[i] if i < len(QI_GAINS) else 5
+    return total
+
+
 # ---------------------------------------------------------------- 灵根系统
 FIVE_ELEMENTS = ("金", "木", "水", "火", "土")
+
+# ---------------- 五行克制：金克木、木克土、土克水、水克火、火克金 ----------------
+# 克制方 +15% 有效战力，被克方 -15% 有效战力
+ELEMENT_COUNTER = {
+    "金": "木",
+    "木": "土",
+    "土": "水",
+    "水": "火",
+    "火": "金",
+}
+ELEMENT_COUNTERED_BY = {v: k for k, v in ELEMENT_COUNTER.items()}
+
+
+def extract_elements(spirit_root: str) -> list:
+    """从灵根名中提取五行属性列表。伪灵根无五行。"""
+    if not spirit_root or "·" not in spirit_root:
+        return []
+    _, _, elems = spirit_root.partition("·")
+    if elems == "伪灵根":
+        return []
+    return [ch for ch in elems if ch in FIVE_ELEMENTS]
+
+
+def element_multiplier(spirit_root: str, enemy_elem: str) -> float:
+    """五行克制倍率：玩家克制敌 1.15 / 被克 0.85 / 无关 1.0。
+
+    多灵根元素多，更易触发克制（补偿其修为系数低）；伪灵根永远 1.0。
+    """
+    player_elems = extract_elements(spirit_root)
+    if not player_elems or not enemy_elem:
+        return 1.0
+    for elem in player_elems:
+        if ELEMENT_COUNTER.get(elem) == enemy_elem:
+            return 1.15  # 克制
+    for elem in player_elems:
+        if ELEMENT_COUNTERED_BY.get(elem) == enemy_elem:
+            return 0.85  # 被克
+    return 1.0
+
 # 灵根前缀 → (修为获取系数, 冲关率修正)
 ROOT_PREFIXES = [
     ("天灵根", 1.6, +0.10),
@@ -120,6 +178,15 @@ def spirit_root_info(name: Any) -> tuple[float, float]:
         if s.startswith(prefix):
             return coeff, mod
     return 1.0, 0.0
+
+
+def grant_exp(state: dict, amount: int, source: str = "ai") -> int:
+    """统一的修为结算：所有正向经验都乘灵根系数（负向不受影响，惩罚公平）。"""
+    if amount <= 0:
+        return amount
+    coeff, _ = spirit_root_info(state.get("spirit_root"))
+    return int(amount * coeff)
+
 
 
 # ---------------------------------------------------------------- 史官压缩（远期记忆 → 前尘摘要）
@@ -183,6 +250,12 @@ def compress_memory(state: dict) -> bool:
 # ---------------------------------------------------------------- 江湖人物（NPC 道缘）
 NPC_MAX = 6            # 相识上限：边缘人物自然淡忘
 NPC_DELTA_CAP = 20     # 单轮道缘变化上限
+# 阈值与冷却（调优版）：gift 70 / teach 70 / vendetta -55；同类事件 10 轮后可再触发
+NPC_GIFT_THRESHOLD = 70
+NPC_TEACH_THRESHOLD = 70
+NPC_VENDETTA_THRESHOLD = -55
+NPC_TEACH_COOLDOWN = 3
+NPC_EVENT_REPEAT_COOLDOWN = 10
 
 
 def bond_label(bond: int) -> str:
@@ -218,8 +291,12 @@ def apply_npc_updates(state: dict, data: dict) -> list:
         npc = next((n for n in npcs if n["name"] == name), None)
         if npc is None:
             if len(npcs) >= NPC_MAX:
-                # 相识已满：道缘最浅者淡出江湖
-                npcs.sort(key=lambda n: abs(n["bond"]))
+                # 相识已满：优先淘汰道缘浅、相识短的新面孔（老朋友更难淡忘）
+                def _keep_score(n):
+                    bond_weight = abs(n["bond"])
+                    age_weight = min((state["turn"] - n.get("met_turn", state["turn"])) * 2, 20)
+                    return bond_weight + age_weight
+                npcs.sort(key=_keep_score)
                 npcs[:] = npcs[1:]
             npc = {"name": name, "title": title or "江湖人", "bond": 0, "met_turn": state["turn"]}
             npcs.append(npc)
@@ -294,8 +371,8 @@ def sanitize_state(raw: dict) -> dict:
         return clamp(_to_int(v, d), lo, hi)
 
     realm_index = _int(raw.get("realm_index"), 0, MAX_REALM_INDEX, 0)
-    hp_max = _int(raw.get("hp_max"), 100, 300, 100 + realm_index * 10)
-    qi_max = _int(raw.get("qi_max"), 50, 200, 50 + realm_index * 5)
+    hp_max = _int(raw.get("hp_max"), 100, 400, hp_max_of(realm_index))
+    qi_max = _int(raw.get("qi_max"), 50, 250, qi_max_of(realm_index))
 
     items = []
     for it in (raw.get("items") or [])[:20]:
@@ -355,7 +432,7 @@ def sanitize_state(raw: dict) -> dict:
 
     # 待触发的天机事件（道缘阈值跨越产生，下轮消费）
     pending_events = []
-    for ev in (raw.get("pending_events") or [])[:2]:
+    for ev in (raw.get("pending_events") or [])[:3]:
         if isinstance(ev, dict) and ev.get("type") in ("gift", "teach", "vendetta"):
             npc = str(ev.get("npc", "")).strip()[:12]
             if npc:
@@ -382,6 +459,8 @@ def sanitize_state(raw: dict) -> dict:
         "npcs": npcs,
         "style_echo": style_echo,
         "pending_events": pending_events,
+        "fail_streak": _int(raw.get("fail_streak"), 0, 20, 0),
+        "last_near_death_turn": _int(raw.get("last_near_death_turn"), -999, 9999, -999),
         "turn": _int(raw.get("turn"), 0, 9999, 0),
     }
 
@@ -399,18 +478,24 @@ def run_trial(state: dict, action: dict) -> tuple[str, dict | None]:
         return "无特殊判定（玩家已筑基），请依据玩家行动自然推进剧情。", None
     # 灵根影响冲关率（判定先行：资质厚薄，天道先知）
     _, root_mod = spirit_root_info(state.get("spirit_root"))
-    rate = clamp(REALM_TABLE[level][2] + root_mod, 0.05, 0.98)
+    # 保底：连续突破失利，每败一次 +8% 成功率，封顶 +24%
+    fail_streak = state.get("fail_streak", 0)
+    pity_bonus = min(fail_streak * 0.08, 0.24)
+    rate = clamp(REALM_TABLE[level][2] + root_mod + pity_bonus, 0.05, 0.98)
     ok = random.random() < rate
+    pity_hint = ""
+    if pity_bonus > 0:
+        pity_hint = f"（天道眷顾：连续突破失利{fail_streak}次，此番成功率提升{int(pity_bonus * 100)}%。）"
     if level == 8 and ok:
         return "TRIGGER_ENDING", {"ending": True}
     next_name = realm_name(level + 1)
     if ok:
         return (
-            f"闭关冲击【{next_name}】成功：境界突破至{next_name}，气血、灵力尽数复满。",
+            f"闭关冲击【{next_name}】成功：境界突破至{next_name}，气血、灵力尽数复满。{pity_hint}",
             {"success": True},
         )
     return (
-        f"闭关冲击【{next_name}】失败：走火入魔受了内伤，修为折损三成、气血 −15。",
+        f"闭关冲击【{next_name}】失败：走火入魔受了内伤，修为折损、气血受损。{pity_hint}",
         {"success": False},
     )
 
@@ -424,19 +509,84 @@ def apply_trial(state: dict, trial: dict | None) -> dict | None:
     if trial["success"]:
         state["realm_index"] = level + 1
         state["exp"] = 0
-        state["hp_max"] += 10
-        state["qi_max"] += 5
+        state["hp_max"] += HP_GAINS[level] if level < len(HP_GAINS) else 10
+        state["qi_max"] += QI_GAINS[level] if level < len(QI_GAINS) else 5
         state["hp"] = state["hp_max"]
         state["qi"] = state["qi_max"]
+        state["fail_streak"] = 0  # 成功重置保底
     else:
-        state["exp"] = int(state["exp"] * 0.7)
+        fail_streak = state.get("fail_streak", 0)
+        # 修为折损递减：首次保留 70%，其后每败一次 +5%，封顶 85%
+        retention = 0.70 + min(fail_streak * 0.05, 0.15)
+        state["exp"] = int(state["exp"] * retention)
         state["hp"] = clamp(state["hp"] - 15, 0, state["hp_max"])
+        state["fail_streak"] = fail_streak + 1
     return view
 
 
 # ---------------------------------------------------------------- 轻量斗法（一次行动 + 判定制演出）
-ENEMY_POOL = ["黑风寨修士", "泽地铁甲蜥", "劫道散修", "幻面狐妖", "枯尸道人", "山魈"]
-LOOT_POOL = [("碎星石", "中品"), ("凝气丹", "下品"), ("铁背蜥甲", "下品"), ("引灵符", "中品")]
+# ---------------------------------------------------------------- 敌人数据表（按境界分层）
+# (名称, 出现境界区间, 基础战力, 五行属性, 战利品层级)
+ENEMY_DATA = [
+    # --- 炼气 1-3 层区域 ---
+    {"name": "山野妖鼠",   "lo": 0, "hi": 2, "cp_base": 60,  "elem": "土", "loot_tier": 0},
+    {"name": "流寇斥候",   "lo": 0, "hi": 2, "cp_base": 75,  "elem": "金", "loot_tier": 0},
+    {"name": "疯道散修",   "lo": 0, "hi": 2, "cp_base": 90,  "elem": "火", "loot_tier": 0},
+    # --- 炼气 3-5 层区域 ---
+    {"name": "黑风寨修士", "lo": 2, "hi": 5, "cp_base": 120, "elem": "金", "loot_tier": 1},
+    {"name": "泽地铁甲蜥", "lo": 2, "hi": 5, "cp_base": 140, "elem": "水", "loot_tier": 1},
+    {"name": "劫道散修",   "lo": 2, "hi": 5, "cp_base": 130, "elem": "火", "loot_tier": 1},
+    # --- 炼气 5-8 层区域 ---
+    {"name": "幻面狐妖",   "lo": 4, "hi": 8, "cp_base": 200, "elem": "木", "loot_tier": 2},
+    {"name": "枯尸道人",   "lo": 4, "hi": 8, "cp_base": 220, "elem": "土", "loot_tier": 2},
+    {"name": "山魈",       "lo": 4, "hi": 8, "cp_base": 240, "elem": "土", "loot_tier": 2},
+    # --- 炼气 8-9 层区域（精英） ---
+    {"name": "碧磷老怪",   "lo": 6, "hi": 9, "cp_base": 320, "elem": "水", "loot_tier": 3},
+    {"name": "邪修长老",   "lo": 6, "hi": 9, "cp_base": 360, "elem": "火", "loot_tier": 3},
+]
+ENEMY_POOL = [e["name"] for e in ENEMY_DATA]  # 兼容引用
+
+# 战利品池分层（tier 越高掉落越好）
+LOOT_TIERS = [
+    # tier 0：炼气 1-3 层
+    [("辟谷丹", "下品", 0.40), ("疗伤丹", "下品", 0.35), ("碎星石", "下品", 0.25)],
+    # tier 1：炼气 3-5 层
+    [("疗伤丹", "下品", 0.30), ("凝气丹", "下品", 0.30), ("碎星石", "中品", 0.20), ("引灵符", "下品", 0.20)],
+    # tier 2：炼气 5-8 层
+    [("回气丹", "中品", 0.25), ("凝气丹", "中品", 0.25), ("铁背蜥甲", "中品", 0.25), ("清心丹", "下品", 0.25)],
+    # tier 3：炼气 8-9 层（精英）
+    [("回气丹", "上品", 0.30), ("凝气丹", "中品", 0.30), ("碎星石", "中品", 0.20), ("引灵符", "中品", 0.20)],
+]
+LOOT_POOL = LOOT_TIERS[1]  # 兼容引用：NPC 赠宝用 tier1 池（名称, 品级, 权重）
+
+
+def roll_loot(tier: int) -> dict:
+    """按战利品层级随机掉落物品。"""
+    pool = LOOT_TIERS[min(tier, len(LOOT_TIERS) - 1)]
+    r = random.random()
+    acc = 0.0
+    for name, rarity, weight in pool:
+        acc += weight
+        if r < acc:
+            return {"name": name, "qty": 1, "rarity": rarity}
+    fallback = pool[0]
+    return {"name": fallback[0], "qty": 1, "rarity": fallback[1]}
+
+
+def _pick_enemy(state: dict, enemy_name: str | None = None) -> dict:
+    """按名取敌；无名则按玩家境界从出没区间选；NPC 名不在册 → 取同境界池代表（沿用其战力）。"""
+    if enemy_name:
+        for e in ENEMY_DATA:
+            if e["name"] == enemy_name:
+                return e
+        # 死敌是江湖人物（不在怪物册上）：按境界取池，名号保留给叙事
+        level = state["realm_index"]
+        pool = [e for e in ENEMY_DATA if e["lo"] <= level <= e["hi"]] or ENEMY_DATA
+        stand_in = random.choice(pool)
+        return {**stand_in, "name": enemy_name}
+    level = state["realm_index"]
+    pool = [e for e in ENEMY_DATA if e["lo"] <= level <= e["hi"]] or ENEMY_DATA
+    return random.choice(pool)
 
 
 def combat_power(state: dict) -> float:
@@ -446,41 +596,74 @@ def combat_power(state: dict) -> float:
             + state["realm_index"] * 25 + state["exp"] * 0.2) * root_coeff
 
 
-def run_fight_trial(state: dict, enemy: str | None = None, hard: bool = False) -> tuple[str, dict]:
-    """斗法判定：胜负、伤亡、战利品全由天道定死，AI 只负责演出。
-    hard=True 为死敌寻仇（敌偏强、胜则战利更厚）。"""
-    ratio = random.uniform(*(1.1, 1.4) if hard else (0.6, 1.3))  # 敌方战力 / 我方战力
-    enemy = enemy or random.choice(ENEMY_POOL)
+def run_fight_trial(state: dict, enemy_name: str | None = None, hard: bool = False) -> tuple[str, dict]:
+    """斗法判定：玩家战力 vs 敌方战力，胜负、伤亡、战利品全由天道定死，AI 只负责演出。
+
+    判定：ratio = enemy_cp / (player_cp × elem_mult)
+      ratio < 0.75 完胜 / ≤1.05 险胜 / >1.05 落败
+    hard=True 为死敌寻仇（浮动 ×1.0~1.5，必定不弱于玩家基础战力）。
+    """
+    player_cp = combat_power(state)
+    enemy = _pick_enemy(state, enemy_name)
+
+    realm_scale = 1.0 + state["realm_index"] * 0.08
+    fluct_range = (1.0, 1.5) if hard else (0.7, 1.2)
+    enemy_cp = enemy["cp_base"] * realm_scale * random.uniform(*fluct_range)
+
+    elem_mult = element_multiplier(state.get("spirit_root"), enemy.get("elem"))
+    ratio = enemy_cp / max(player_cp * elem_mult, 1.0)  # 防 0 除
+
     rounds = random.randint(3, 12)
     fx = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0, "items_add": [], "items_remove": []}
+    lv = state["realm_index"]
+    reward_scale = 1.0 + lv * 0.12  # 奖励境界缩放
+
     if ratio < 0.75:      # 完胜
         outcome = "win"
         fx["hp"] = -random.randint(4, 12)
         fx["qi"] = -random.randint(6, 15)
-        fx["exp"] = random.randint(15, 30)
-        fx["spirit_stones"] = random.randint(20, 60)
-        if hard or random.random() < 0.3:
-            name, rarity = random.choice(LOOT_POOL)
-            fx["items_add"] = [{"name": name, "qty": 1, "rarity": rarity}]
-        verdict = f"{rounds}合之内技高一筹，敌力竭败走。你仅受皮肉之伤，搜检遗落，得灵石{fx['spirit_stones']}、修为心得{fx['exp']}。"
+        fx["exp"] = grant_exp(state, random.randint(15, 30), source="combat")
+        fx["spirit_stones"] = int(random.randint(20, 60) * reward_scale)
+        if hard or random.random() < 0.30:
+            fx["items_add"] = [roll_loot(enemy["loot_tier"])]
+        verdict = (
+            f"{rounds}合之内技高一筹，敌力竭败走。你仅受皮肉之伤，"
+            f"搜检遗落，得灵石{fx['spirit_stones']}、修为心得{fx['exp']}。"
+        )
     elif ratio <= 1.05:   # 险胜
         outcome = "narrow"
         fx["hp"] = -random.randint(16, 32)
         fx["qi"] = -random.randint(18, 30)
-        fx["exp"] = random.randint(10, 20)
-        fx["spirit_stones"] = random.randint(10, 40)
-        verdict = f"缠斗{rounds}合，两败俱伤——对方终于先撑不住，踉跄遁走。你伤得不轻，仍有所获：灵石{fx['spirit_stones']}、修为心得{fx['exp']}。"
+        fx["exp"] = grant_exp(state, random.randint(10, 20), source="combat")
+        fx["spirit_stones"] = int(random.randint(10, 40) * reward_scale)
+        if random.random() < 0.15:
+            fx["items_add"] = [roll_loot(enemy["loot_tier"])]
+        verdict = (
+            f"缠斗{rounds}合，两败俱伤——对方终于先撑不住，踉跄遁走。"
+            f"你伤得不轻，仍有所获：灵石{fx['spirit_stones']}、修为心得{fx['exp']}。"
+        )
     else:                 # 落败
         outcome = "lose"
         fx["hp"] = -random.randint(int(state["hp_max"] * 0.3), int(state["hp_max"] * 0.5))
         fx["qi"] = -random.randint(int(state["qi_max"] * 0.4), int(state["qi_max"] * 0.7))
-        fx["exp"] = random.randint(3, 8)
+        fx["exp"] = int(random.randint(3, 8) * reward_scale)  # 落败不给灵根加成
         fx["spirit_stones"] = -random.randint(8, 25)
-        verdict = f"力战{rounds}合，终究技逊一筹，你且战且退，狼狈脱身。气血大损，随身灵石散落{abs(fx['spirit_stones'])}枚。"
-    trial = {"fight": True, "outcome": outcome, "enemy": enemy, "fx": fx}
+        verdict = (
+            f"力战{rounds}合，终究技逊一筹，你且战且退，狼狈脱身。"
+            f"气血大损，随身灵石散落{abs(fx['spirit_stones'])}枚。"
+        )
+
+    elem_hint = ""
+    if elem_mult > 1.0:
+        elem_hint = "（你的灵根五行克制对方，占据上风。）"
+    elif elem_mult < 1.0:
+        elem_hint = "（对方五行克制你的灵根，你颇为吃力。）"
+
+    trial = {"fight": True, "outcome": outcome, "enemy": enemy["name"], "fx": fx}
     text = (
-        f"【斗法判定】玩家与「{enemy}」交手，{verdict}"
-        f"（以上胜负、伤亡、得失均已由天道定死，你必须严格按此叙述战斗经过与结果，不得改写胜负，不得额外增减得失。）"
+        f"【斗法判定】玩家与「{enemy['name']}」交手，{verdict}{elem_hint}"
+        f"（以上胜负、伤亡、得失均已由天道定死，你必须严格按此叙述战斗经过与结果，"
+        f"不得改写胜负，不得额外增减得失。）"
     )
     return text, trial
 
@@ -523,20 +706,46 @@ def _merge_fx(delta_applied: dict, fx: dict) -> None:
 
 # ---------------------------------------------------------------- 道缘阈值 → 天机事件
 def check_npc_events(state: dict) -> None:
-    """道缘跨越阈值 → 记入 pending_events，下轮由天道结算叙事。同类事件一生一次。"""
+    """道缘跨越阈值 → 记入 pending_events，下轮由天道结算叙事。
+
+    规则（调优版）：
+      - gift: bond ≥ 70，距上次 gift ≥ 10 轮（或从未触发）
+      - teach: bond ≥ 70 且 gift 已触发距今 ≥ 3 轮，距上次 teach ≥ 10 轮
+      - vendetta: bond ≤ -55，距上次 vendetta ≥ 10 轮
+      - 上限 3 条，超出按优先级保留（vendetta > gift > teach）
+    """
+    MAX_PENDING = 3
     for npc in state["npcs"]:
         fired = npc.setdefault("fired", {})
         bond = npc["bond"]
-        if bond >= 80 and "gift" not in fired and len(state["pending_events"]) < 2:
-            fired["gift"] = state["turn"]
-            state["pending_events"].append({"type": "gift", "npc": npc["name"], "at": state["turn"]})
-        elif (bond >= 80 and "gift" in fired and "teach" not in fired
-              and state["turn"] - fired["gift"] >= 5 and len(state["pending_events"]) < 2):
-            fired["teach"] = state["turn"]
-            state["pending_events"].append({"type": "teach", "npc": npc["name"], "at": state["turn"]})
-        elif bond <= -60 and "vendetta" not in fired and len(state["pending_events"]) < 2:
-            fired["vendetta"] = state["turn"]
-            state["pending_events"].append({"type": "vendetta", "npc": npc["name"], "at": state["turn"]})
+        turn = state["turn"]
+
+        # 死敌寻仇（最高优先级）
+        if (bond <= NPC_VENDETTA_THRESHOLD
+                and turn - fired.get("vendetta", -999) >= NPC_EVENT_REPEAT_COOLDOWN):
+            if len(state["pending_events"]) < MAX_PENDING:
+                fired["vendetta"] = turn
+                state["pending_events"].append({"type": "vendetta", "npc": npc["name"], "at": turn})
+        # 故人赠宝
+        elif (bond >= NPC_GIFT_THRESHOLD
+              and turn - fired.get("gift", -999) >= NPC_EVENT_REPEAT_COOLDOWN):
+            if len(state["pending_events"]) < MAX_PENDING:
+                fired["gift"] = turn
+                state["pending_events"].append({"type": "gift", "npc": npc["name"], "at": turn})
+        # 故人传功（需 gift 已先行触发）
+        elif (bond >= NPC_TEACH_THRESHOLD
+              and "gift" in fired
+              and turn - fired["gift"] >= NPC_TEACH_COOLDOWN
+              and turn - fired.get("teach", -999) >= NPC_EVENT_REPEAT_COOLDOWN):
+            if len(state["pending_events"]) < MAX_PENDING:
+                fired["teach"] = turn
+                state["pending_events"].append({"type": "teach", "npc": npc["name"], "at": turn})
+
+    # 按优先级截断（vendetta > gift > teach）
+    if len(state["pending_events"]) > MAX_PENDING:
+        priority = {"vendetta": 0, "gift": 1, "teach": 2}
+        state["pending_events"].sort(key=lambda e: priority.get(e["type"], 9))
+        state["pending_events"] = state["pending_events"][:MAX_PENDING]
 
 
 def consume_pending_event(state: dict) -> tuple[str, dict | None, dict]:
@@ -549,7 +758,8 @@ def consume_pending_event(state: dict) -> tuple[str, dict | None, dict]:
     npc = next((n for n in state["npcs"] if n["name"] == npc_name), None)
     title = npc["title"] if npc else "故人"
     if kind == "gift":
-        loot_name, loot_rarity = random.choice(LOOT_POOL)
+        loot = roll_loot(1)  # 故人赠宝：tier1 池
+        loot_name, loot_rarity = loot["name"], loot["rarity"]
         stones = random.randint(30, 80)
         fx = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": stones,
               "items_add": [{"name": loot_name, "qty": 1, "rarity": loot_rarity}], "items_remove": []}
@@ -562,21 +772,46 @@ def consume_pending_event(state: dict) -> tuple[str, dict | None, dict]:
         )
         return text, None, fx
     if kind == "teach":
-        fx = {"hp": 0, "qi": 0, "exp": 40, "spirit_stones": 0, "items_add": [], "items_remove": []}
-        state["exp"] = clamp(state["exp"] + 40, 0, exp_max_of(state["realm_index"]))
+        teach_exp = grant_exp(state, 40, source="teach")
+        fx = {"hp": 0, "qi": 0, "exp": teach_exp, "spirit_stones": 0, "items_add": [], "items_remove": []}
+        state["exp"] = clamp(state["exp"] + teach_exp, 0, exp_max_of(state["realm_index"]))
         text = (
-            f"【天机事件·故人传功】{npc_name}（{title}）与你坐忘半日，倾囊相授修行心得，修为大进（+40）。"
+            f"【天机事件·故人传功】{npc_name}（{title}）与你坐忘半日，倾囊相授修行心得，"
+            f"修为大进（+{teach_exp}）。"
             f"请在叙事中自然呈现传功情景。（修为已由天道记入，勿在 delta 中重复计入。）"
         )
         return text, None, fx
     # vendetta → 死敌寻仇，直接开战
-    text, trial = run_fight_trial(state, enemy=npc_name, hard=True)
+    text, trial = run_fight_trial(state, enemy_name=npc_name, hard=True)
     return text, trial, trial.get("fx") or {}
 
 
 # ---------------------------------------------------------------- AI 提议 delta 的钳制
-DELTA_BOUNDS = {"hp": 30, "qi": 30, "exp": 50, "spirit_stones": 200}
-VALID_RARITY = ("下品", "中品")
+DELTA_BOUNDS = {"hp": 30, "qi": 30, "exp": 40, "spirit_stones": 80}
+VALID_RARITY = ("下品", "中品", "上品")
+
+# 物品品级 → 药效倍率
+RARITY_MULTIPLIER = {"下品": 1.0, "中品": 1.5, "上品": 2.5}
+
+# 坊市固定价格（经济锚点，不受 AI 影响）
+SHOP_BUY = {
+    "凝气丹": {"price": 40, "rarity": "下品"},
+    "回气丹": {"price": 25, "rarity": "下品"},
+    "疗伤丹": {"price": 15, "rarity": "下品"},
+    "清心丹": {"price": 20, "rarity": "下品"},
+    "辟谷丹": {"price": 10, "rarity": "下品"},
+}
+SHOP_SELL_RATIO = 0.5          # 卖出价为买入的 50%
+
+# 濒死协议参数
+NEAR_DEATH_HP_RATIO = 0.35     # 恢复至 35%
+NEAR_DEATH_EXP_LOSS = 0.15     # 修为折损 15%
+NEAR_DEATH_COOLDOWN = 5        # 5 轮内再次濒死惩罚加重
+
+
+def cultivate_cost(state: dict) -> int:
+    """每轮行动的灵气补给消耗：1 + 境界×0.5（境界越高维持越贵）。"""
+    return 1 + int(state["realm_index"] * 0.5)
 
 
 def clamp_ai_delta(delta: Any, state: dict) -> dict:
@@ -680,8 +915,8 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 1. 只输出一个 json 对象，不得有任何 json 以外的文字、注释或代码块标记。
 2. narrative：120~200 字，古典白话，禁止现代词汇与网络用语；必须与【本轮判定】严格一致，不得发明判定之外的结果。
 3. choices：恰好 3 个后续行动选项，text 不超过 24 字，其中至少一个 low 风险的稳妥选项；不出"继续"这类无意义选项。
-4. delta：本轮数值变化，与剧情严格一致且幅度克制：hp、qi 变化不超过 ±30，exp 不超过 ±50，spirit_stones 变化不超过 ±200；无变化则全部为 0。
-5. items_add 最多 1 件物品，rarity 只能是"下品"或"中品"；items_remove 只能移除玩家已有物品。
+4. delta：本轮数值变化，与剧情严格一致且幅度克制：hp、qi 变化不超过 ±30，exp 不超过 ±40，spirit_stones 变化不超过 ±80；无变化则全部为 0。
+5. items_add 最多 1 件物品，rarity 为"下品"（常见）、"中品"（偶尔）或"上品"（稀有，非大机缘不可得）；items_remove 只能移除玩家已有物品。品级影响药效，需与剧情匹配。
 6. 不得杀死主角（可重伤、可陷入绝境）；不得无剧情依据地赠送贵重之物。
 7. 境界与突破的结果只能来自【本轮判定】，你只能叙述它，不能发明它；delta 中不得出现任何境界字段。
 8. memory：30 字以内概括本轮关键事件，供后续剧情回忆。
@@ -820,18 +1055,23 @@ def handle_use_item(state: dict, req: "ActReq") -> dict:
                             "retries": 0, "tokens_in": 0, "tokens_out": 0},
         }
 
-    # 应用药效（丹力不因灵根资质增减）
+    # 应用药效：品级定丹力厚薄（下×1.0 / 中×1.5 / 上×2.5）；经验丹再乘灵根系数
+    rarity = owned.get("rarity", "下品")
+    rarity_mult = RARITY_MULTIPLIER.get(rarity, 1.0)
     d = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
          "items_add": [], "items_remove": [{"name": name, "qty": 1}]}
     for k, v in info["effect"].items():
         if k == "hp_pct":
-            d["hp"] = int(state["hp_max"] * v)
+            d["hp"] = int(state["hp_max"] * v * rarity_mult)
         elif k == "qi_pct":
-            d["qi"] = int(state["qi_max"] * v)
-        elif k in ("hp", "qi", "exp"):
-            d[k] = int(v)
+            d["qi"] = int(state["qi_max"] * v * rarity_mult)
+        elif k == "exp":
+            d["exp"] = grant_exp(state, int(v * rarity_mult), source="item")
+        elif k in ("hp", "qi"):
+            d[k] = int(v * rarity_mult)
     apply_delta(state, d)
-    narrative = f"你取出{name}服下。{info['text']}"
+    rarity_desc = {"下品": "", "中品": "丹气醇厚，", "上品": "丹香扑鼻，药力浑厚无匹，"}
+    narrative = f"你取出{rarity}{name}服下。{rarity_desc.get(rarity, '')}{info['text']}"
 
     return {
         "ok": True,
@@ -1261,14 +1501,26 @@ ENDING_CHOICES = [
 
 
 def near_death_protocol(state: dict) -> dict:
-    """天道有好生之德：气血耗尽不死，重伤被救，代价是灵石减半。"""
-    old_hp, old_stones = state["hp"], state["spirit_stones"]
-    state["hp"] = max(10, state["hp_max"] * 3 // 10)
-    state["spirit_stones"] //= 2
+    """天道有好生之德：气血耗尽不死，重伤被救。
+
+    惩罚：HP 恢复至 35%，灵石减半（5 轮内再次濒死则仅余 25%），修为折损 15%。
+    """
+    old_hp, old_stones, old_exp = state["hp"], state["spirit_stones"], state["exp"]
+    state["hp"] = max(10, int(state["hp_max"] * NEAR_DEATH_HP_RATIO))
+
+    # 灵石惩罚：常规减半；冷却期内再濒死 → 仅余四分之一
+    keep_ratio = 0.25 if state["turn"] - state.get("last_near_death_turn", -999) < NEAR_DEATH_COOLDOWN else 0.5
+    state["spirit_stones"] = int(state["spirit_stones"] * keep_ratio)
+
+    # 修为折损（新增）
+    exp_loss = int(state["exp"] * NEAR_DEATH_EXP_LOSS)
+    state["exp"] = state["exp"] - exp_loss
+
+    state["last_near_death_turn"] = state["turn"]
     return {
         "hp": state["hp"] - old_hp,
         "qi": 0,
-        "exp": 0,
+        "exp": -exp_loss,
         "spirit_stones": state["spirit_stones"] - old_stones,
         "items_add": [],
         "items_remove": [],
@@ -1304,16 +1556,22 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。"""
     delta_applied = clamp_ai_delta(data.get("delta"), state)
-    root_coeff, _ = spirit_root_info(state.get("spirit_root"))
-    if delta_applied["exp"] > 0 and root_coeff != 1.0:
-        delta_applied["exp"] = int(delta_applied["exp"] * root_coeff)
+    if delta_applied["exp"] > 0:
+        delta_applied["exp"] = grant_exp(state, delta_applied["exp"], source="ai")
     apply_delta(state, delta_applied)
+    # 修炼消耗（经济回收口）：每轮维持修为的灵气补给，灵石不足时不扣
+    cost = cultivate_cost(state)
+    if state["spirit_stones"] >= cost:
+        state["spirit_stones"] -= cost
+        delta_applied["spirit_stones"] -= cost
+    # 濒死修为折损并入飘字
     narrative = str(data.get("narrative", "")).strip()
     memory_line = str(data.get("memory", ""))[:60]
     near_death_flag = False
     if state["hp"] <= 0:
         nd = near_death_protocol(state)
         delta_applied["hp"] += nd["hp"]
+        delta_applied["exp"] += nd["exp"]
         delta_applied["spirit_stones"] += nd["spirit_stones"]
         narrative = narrative + "\n\n" + NEAR_DEATH_TEXT
         memory_line = memory_line or "重伤濒死"
@@ -1334,6 +1592,58 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str):
     except Exception:
         pass
     return narrative, choices, delta_applied, near_death_flag, npc_events
+
+
+# ---------------------------------------------------------------- 坊市（固定价格，纯代码裁决）
+class ShopReq(BaseModel):
+    state: dict = Field(default_factory=dict)
+    action: dict = Field(default_factory=dict)  # {"type": "shop_buy"|"shop_sell", "name": ..., "qty": 1}
+
+
+@app.post("/api/shop")
+def shop(req: ShopReq):
+    """坊市：固定价格买卖，不调 AI、不掷骰——灵石的经济锚点。"""
+    state = sanitize_state(req.state or {})
+    action = req.action or {}
+    op = str(action.get("type", ""))
+    name = str(action.get("name", "")).strip()[:12]
+    qty = clamp(_to_int(action.get("qty"), 1), 1, 10)
+
+    if op == "shop_buy":
+        item = SHOP_BUY.get(name)
+        if not item:
+            return {"ok": False, "error": {"code": "ITEM_NOT_SOLD", "message": f"坊市并无「{name}」出售"}}
+        total = item["price"] * qty
+        if state["spirit_stones"] < total:
+            return {"ok": False, "error": {"code": "NOT_ENOUGH_STONES", "message": f"灵石不足，需{total}枚"}}
+        state["spirit_stones"] -= total
+        _add_item(state["items"], {"name": name, "qty": qty, "rarity": item["rarity"]})
+        return {
+            "ok": True, "state": state,
+            "narrative": f"你以{total}枚灵石购得{name}×{qty}。",
+            "delta_applied": {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": -total,
+                              "items_add": [{"name": name, "qty": qty, "rarity": item["rarity"]}],
+                              "items_remove": []},
+        }
+
+    if op == "shop_sell":
+        owned = next((it for it in state["items"] if it["name"] == name), None)
+        if not owned or owned.get("qty", 0) < qty:
+            return {"ok": False, "error": {"code": "ITEM_NOT_OWNED", "message": f"行囊中并无「{name}」×{qty}"}}
+        sell_price = int(SHOP_BUY.get(name, {"price": 10})["price"] * SHOP_SELL_RATIO)
+        total = sell_price * qty
+        state["spirit_stones"] += total
+        owned["qty"] -= qty
+        if owned["qty"] <= 0:
+            state["items"].remove(owned)
+        return {
+            "ok": True, "state": state,
+            "narrative": f"你售出{name}×{qty}，得灵石{total}枚。",
+            "delta_applied": {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": total,
+                              "items_add": [], "items_remove": [{"name": name, "qty": qty}]},
+        }
+
+    return {"ok": False, "error": {"code": "UNKNOWN_OP", "message": "未知操作"}}
 
 
 @app.post("/api/act")

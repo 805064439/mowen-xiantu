@@ -30,6 +30,8 @@ export interface GameState {
   npcs?: NpcEntry[];      // 江湖人物（道缘卡）
   style_echo?: string[];  // 最近开篇回声（防 AI 复读）
   pending_events?: PendingEvent[];  // 待结算天机事件（赠宝/传功/寻仇）
+  fail_streak?: number;             // 连续突破失败次数（保底依据）
+  last_near_death_turn?: number;    // 上次濒死轮次（冷却判定）
   turn: number;
 }
 
@@ -99,10 +101,11 @@ export interface NpcEvent {
 }
 
 export interface GameAction {
-  type: "choice" | "breakthrough" | "custom" | "use_item";
+  type: "choice" | "breakthrough" | "custom" | "use_item" | "shop_buy" | "shop_sell";
   id?: string;
   text?: string;
   name?: string;
+  qty?: number;  // 坊市买卖数量
   tag?: string;  // 选项标签（fight → 后端掷斗法判定）
 }
 

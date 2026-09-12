@@ -32,6 +32,7 @@ export const game = reactive({
   confirmText: "",
   statusDrawerOpen: false,   // 全状态抽屉（点吸顶迷你条唤起）
   saveCodeOpen: false,       // 仙缘令弹窗（存档导入导出）
+  shopOpen: false,           // 坊市弹窗（固定价格买卖）
 });
 
 /* ---------------- 打字机 ---------------- */
@@ -364,6 +365,32 @@ export const metaText = computed(() => {
   return t;
 });
 
-export const actions = { act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText, exportSaveCode, importSaveCode };
+/* ---------------- 坊市（固定价格，纯后端裁决） ---------------- */
+async function shopAct(action: GameAction) {
+  if (!game.state || game.loading) return;
+  game.loading = true;
+  try {
+    const res = await fetch(`${API}/shop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: game.state, action }),
+    });
+    const d = await res.json();
+    if (!d.ok) {
+      floatText(d?.error?.message || "坊市交易未成", "f-neg");
+      return;
+    }
+    game.state = d.state;
+    save();
+    floatDeltas(d.delta_applied);
+    floatText(d.narrative, "f-item");
+  } catch {
+    floatText("坊市未开张（网络异常）", "f-neg");
+  } finally {
+    game.loading = false;
+  }
+}
+
+export const actions = { act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText, exportSaveCode, importSaveCode, shopAct };
 
 export type { GameAction };

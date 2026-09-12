@@ -15,6 +15,7 @@ import StickyBar from "./components/StickyBar.vue";
 import StatusDrawer from "./components/StatusDrawer.vue";
 import BackToNow from "./components/BackToNow.vue";
 import SaveCodeModal from "./components/SaveCodeModal.vue";
+import ShopModal from "./components/ShopModal.vue";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const isHeavenRoot = computed(() => (game.state?.spirit_root || "").startsWith("天灵根"));
@@ -28,7 +29,7 @@ onMounted(() => { actions.init(); });
 </script>
 
 <template>
-  <div id="app">
+  <div id="app-root">
     <header>
       <div class="seal"><span>墨</span><span>问</span><span>仙</span><span>途</span></div>
       <div class="title-wrap">
@@ -54,6 +55,7 @@ onMounted(() => { actions.init(); });
       <span id="meta">{{ metaText }}</span>
       <span>点击剧情文字可跳过打字</span>
       <span class="foot-btns">
+        <button id="btn-shop" type="button" @click="game.shopOpen = true">坊市</button>
         <button id="btn-savecode" type="button" @click="game.saveCodeOpen = true">仙缘令</button>
         <button id="btn-restart" type="button" @click="actions.requestRestart()">再入轮回</button>
       </span>
@@ -68,4 +70,5 @@ onMounted(() => { actions.init(); });
   <StatusDrawer />
   <BackToNow />
   <SaveCodeModal v-if="game.saveCodeOpen" />
+  <ShopModal v-if="game.shopOpen" />
 </template>
