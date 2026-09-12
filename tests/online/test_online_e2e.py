@@ -372,7 +372,3 @@ class TestOnlineEnding:
             s = plain["state"]
             s["exp"] = 800
         pytest.skip("未撞到成功判定，跳过两路一致性比对")
-
-
-def pytest_configure(config):
-    config.addinivalue_line("markers", "slow: 会真实调用 AI，消耗 token")

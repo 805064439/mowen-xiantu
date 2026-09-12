@@ -1,29 +1,33 @@
 # 墨问仙途 · 测试体系
 
-三层结构：**代码实现 → 已部署产物** 全覆盖，共 348 项本地用例 + 线上端到端。
+三层结构：**代码实现 → 已部署产物** 全覆盖，共 371 项用例。
 
 | 层 | 目录 | 工具 | 数量 | 测什么 |
 |---|---|---|---|---|
 | 后端单元 | `tests/backend` | pytest | 308 | 天道引擎的全部纯逻辑：数值/判定/经济/状态清洗/NPC/接口契约 |
 | 前端单元 | `tests/frontend` | vitest + happy-dom | 40 | 存档持久化、仙缘令编解码、前后端常量一致性 |
-| 线上端到端 | `tests/online` | pytest + httpx | ~30 | 打真实 Vercel：健康度、静态资源、坊市、用丹、SSE、真实 AI、结局回归 |
+| 线上端到端 | `tests/online` | pytest + httpx | 23 | 打真实 Vercel：健康度、静态资源、坊市、用丹、SSE、真实 AI、结局回归 |
 
 ## 快速开始
 
 ```bash
 # 本地全部单测
-python -m pytest tests/backend -q          # 后端（可选装 pytest.ini 已配好）
+python -m pytest tests/backend -q          # 后端（pytest.ini 已配好，直接跑即可）
 npx vitest run                             # 前端
 
 # 线上端到端（默认打 production 别名）
 set ONLINE_BASE_URL=https://mowen-xiantu.vercel.app
 python -m pytest tests/online -q -s
 
-# 只跑不花钱的部分（跳过真实 AI 调用）
+# 只跑不花钱的部分（跳过真实 AI 调用，约 8 秒）
 python -m pytest tests/online -q -s -m "not slow"
 ```
 
-首次跑前端需要先装依赖：`npm i`；后端：`pip install -r requirements-dev.txt`。
+首次跑前端需要先装依赖：`pnpm i`（本项目统一用 pnpm，勿用 npm，否则会多出
+`package-lock.json` 导致 Vercel 切换包管理器）；后端：`pip install -r requirements-dev.txt`。
+
+> 线上用例文件名是 `test_online_e2e.py` —— pytest 默认只收集 `test_*.py`，
+> 之前叫 `online_e2e.py` 时会被静默跳过（报 “no tests ran” 而非失败），改名后才被收集到。
 
 ## 设计约定
 
