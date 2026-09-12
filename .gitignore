@@ -4,3 +4,6 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+
+# pnpm 安装期在项目根留下的临时文件
+_tmp_*
