@@ -86,6 +86,11 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
   margin-left:auto; font-variant-numeric:tabular-nums; font-size:11.5px;
   color:var(--ink-soft); border:1px solid var(--line2); border-radius:99px; padding:0 8px;
 }
+.cult-risk{
+  font-size:11px; font-weight:700; border-radius:99px; padding:0 7px; flex:none;
+}
+.cult-risk.risk-good{color:#1f7a4d; border:1px solid rgba(31,122,77,.4); background:rgba(31,122,77,.08);}
+.cult-risk.risk-bad{color:var(--seal); border:1px solid rgba(166,58,43,.4); background:rgba(166,58,43,.08);}
 .stat-cult.cult-secluded{border-top-color:rgba(166,58,43,.45);}
 
 /* ---------- 状态卡 · 江湖人物摘要 ---------- */
@@ -167,6 +172,7 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
 }
 .ctag.tag-fast{border-color:rgba(154,123,45,.55); color:var(--gold);}
 .ctag.tag-slow{border-color:var(--line2); color:var(--muted); opacity:.85;}
+.ctag.tag-vol{border-color:rgba(87,118,168,.55); color:#5776a8; font-style:italic;}
 .chint{
   display:block; margin-top:5px; font-size:12px;
   color:var(--gold); letter-spacing:.5px;

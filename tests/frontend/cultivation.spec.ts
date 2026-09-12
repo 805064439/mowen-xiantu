@@ -9,6 +9,7 @@ import path from "node:path";
 import {
   ACTION_INFO, actionInfo, STREAK_TABLE, STREAK_CAP, SECLUSION_STREAK,
   SECLUSION_DECAY, SECLUSION_FLOOR, streakCoeff, seclusionCoeff, coeffLabel,
+  RISK_VOLATILITY, riskVolatility, riskLabel,
 } from "../../src/game/constants";
 
 function findServerPy(): string {
@@ -63,6 +64,7 @@ function parseScalar(name: string): number {
 const backendCoeff = parseNumDict("ACTION_CULTIVATE_COEFF");
 const backendLabel = parseStrDict("ACTION_CULTIVATE_LABEL");
 const backendStreak = parseStreakTable();
+const backendRisk = parseNumDict("RISK_VOLATILITY");
 
 describe("行动系数与后端同源", () => {
   it("后端每个 tag 前端都有，系数一致", () => {
@@ -95,6 +97,27 @@ describe("行动系数与后端同源", () => {
     expect(ACTION_INFO.rest.coeff).toBeGreaterThan(ACTION_INFO.fight.coeff);
     expect(ACTION_INFO.fight.coeff).toBeGreaterThan(ACTION_INFO.explore.coeff);
     expect(ACTION_INFO.explore.coeff).toBeGreaterThan(ACTION_INFO.trade.coeff);
+  });
+});
+
+describe("高风险波动幅度与后端同源", () => {
+  it("前端 RISK_VOLATILITY 与后端逐条一致", () => {
+    expect(RISK_VOLATILITY).toEqual(backendRisk);
+  });
+
+  it("只有高风险行动波动，低风险行动（cultivate/rest/trade/other）不波动", () => {
+    for (const tag of ["cultivate", "rest", "trade", "other"]) {
+      expect(riskVolatility(tag), `「${tag}」不应波动`).toBe(0);
+    }
+    expect(riskVolatility("fight")).toBe(backendRisk.fight);
+    expect(riskVolatility("explore")).toBe(backendRisk.explore);
+    expect(riskVolatility("unknown_tag")).toBe(0);
+  });
+
+  it("波动标注：>1 机缘、<1 事与愿违、=1 空", () => {
+    expect(riskLabel(1.4)).toBe("机缘");
+    expect(riskLabel(0.6)).toBe("事与愿违");
+    expect(riskLabel(1.0)).toBe("");
   });
 });
 

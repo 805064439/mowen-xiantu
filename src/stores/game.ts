@@ -101,7 +101,8 @@ function floatDeltas(d: { hp?: number; qi?: number; exp?: number; spirit_stones?
     const v = (d[k] ?? 0) | 0;
     if (v > 0) {
       // 修为是本作唯一的速度指标 —— 连同「这轮为什么这么多」一起说清楚
-      const suffix = k === "exp" && cult ? ` · ${cult.action_label} ${coeffLabel(cult.coeff)}` : "";
+      let suffix = k === "exp" && cult ? ` · ${cult.action_label} ${coeffLabel(cult.coeff)}` : "";
+      if (k === "exp" && cult && cult.risk_label) suffix += ` · ${cult.risk_label}`;
       floatText(`+${v} ${names[k]}${suffix}`, "f-pos");
     } else if (v < 0) floatText(`${v} ${names[k]}`, "f-neg");
   }

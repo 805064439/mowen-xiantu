@@ -118,11 +118,30 @@ export interface ActionInfo {
 export const ACTION_INFO: Record<string, ActionInfo> = {
   cultivate: { label: "潜心修行", coeff: 1.8, note: "修行最快，代价是错过外界机缘" },
   rest: { label: "静养调息", coeff: 1.3, note: "修行较快，兼顾回复气血灵力" },
-  fight: { label: "斗法拼杀", coeff: 1.2, note: "修行不慢，另有战利品，但凶险" },
-  explore: { label: "外出探索", coeff: 1.0, note: "基准速度，附带随机机缘" },
+  fight: { label: "斗法拼杀", coeff: 1.2, note: "修行不慢，另有战利品；但凭凶险换高期望——一轮可能大进或空手" },
+  explore: { label: "外出探索", coeff: 1.0, note: "基准速度，机缘随机——常有意外之喜或落空" },
   trade: { label: "坊市交易", coeff: 0.8, note: "修行最慢，换来的是灵石" },
   other: { label: "随缘而行", coeff: 1.0, note: "不偏不倚的基准速度，既无加成也无损失" },
 };
+
+/** 高风险行动修为的随机波动幅度（±），与后端 RISK_VOLATILITY 同源。
+ * 低风险行动（cultivate/rest/trade/other）不波动，保证基准线稳定。 */
+export const RISK_VOLATILITY: Record<string, number> = {
+  fight: 0.40,
+  explore: 0.18,
+};
+
+/** 取某行动的波动幅度；未知/低风险行动返回 0（不波动） */
+export function riskVolatility(tag?: string): number {
+  return RISK_VOLATILITY[tag ?? ""] ?? 0;
+}
+
+/** 波动系数对应的中文标注：>1 机缘、<1 事与愿违、=1 空 */
+export function riskLabel(coeff: number): string {
+  if (coeff > 1.001) return "机缘";
+  if (coeff < 0.999) return "事与愿违";
+  return "";
+}
 
 /** 取行动说明；未知 tag 一律按「随缘而行」，不编造加成 */
 export function actionInfo(tag?: string): ActionInfo {

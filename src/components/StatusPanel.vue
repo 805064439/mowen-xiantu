@@ -49,10 +49,15 @@ const lastAction = computed(() => {
   const c = lastCultivate.value;
   return c ? actionInfo(c.action) : null;
 });
+const lastRisk = computed(() => {
+  const c = lastCultivate.value;
+  return c && c.risk_label ? c.risk_label : "";
+});
 const coeffTitle = computed(() => {
   const c = lastCultivate.value;
   if (!c) return "";
-  return `本轮修为 = ${c.base ?? "?"}（基础） × ${c.coeff}（灵根·行动·连击·状态）`;
+  const risk = c.risk_label ? ` · ${c.risk_label}` : "";
+  return `本轮修为 = ${c.base ?? "?"}（基础） × ${c.coeff}（灵根·行动·连击·状态${risk}）`;
 });
 
 function pct(v: number, max: number) {
@@ -96,6 +101,8 @@ function openDrawer() {
       <span class="cult-coeff" v-if="lastCultivate" :title="coeffTitle">
         ×{{ lastCultivate.coeff }}
       </span>
+      <span class="cult-risk risk-good" v-if="lastRisk === '机缘'">机缘</span>
+      <span class="cult-risk risk-bad" v-else-if="lastRisk === '事与愿违'">事与愿违</span>
     </div>
 
     <div class="stat-foot">

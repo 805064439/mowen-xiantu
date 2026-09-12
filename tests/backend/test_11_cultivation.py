@@ -37,7 +37,7 @@ class TestActionCoefficient:
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
         _, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
-            {}, "行动", tag)
+            {}, "行动", tag, risk_roll=0)   # 均值不波动，验证系数本身
         assert delta["exp"] == expected
 
     def test_cultivate_is_more_than_twice_trade(self, engine, base_state):
@@ -236,7 +236,7 @@ class TestSafeguards:
         meta = {}
         narrative, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 10}, "choices": [], "narrative": "下山去了。", "memory": "m"},
-            meta, "下山采买", "explore")
+            meta, "下山采买", "explore", risk_roll=0)   # 均值：验证闭门惩罚只对枯坐生效
         assert meta["cultivate"]["secluded"] is False
         assert delta["exp"] == 10
         assert engine.SECLUSION_HINT not in narrative
@@ -341,7 +341,9 @@ class TestPacingSimulation:
 
     @staticmethod
     def run(engine, pick, base_exp=10, root="三灵根·水火木", max_turns=3000):
-        """pick(engine, state) → 本轮 tag。返回跑完炼气九层所需轮数。"""
+        """pick(engine, state) → 本轮 tag。返回跑完炼气九层所需轮数。
+
+        risk_roll=0：节奏模拟只验证「速度的期望」，不引入随机波动（波动由专门的分布测试覆盖）。"""
         s = engine.sanitize_state({
             "realm_index": 0, "hp": 100, "hp_max": 100, "qi": 50, "qi_max": 50,
             "exp": 0, "spirit_stones": 99999, "spirit_root": root,
@@ -352,7 +354,7 @@ class TestPacingSimulation:
             turns += 1
             engine._postprocess_turn(
                 s, {"delta": {"exp": base_exp}, "choices": [], "narrative": "n", "memory": "m"},
-                {}, "行动", pick(engine, s))
+                {}, "行动", pick(engine, s), risk_roll=0)
             # 修为圆满即冲关（确定性：必定成功）
             if s["exp"] >= engine.exp_max_of(s["realm_index"]):
                 engine.apply_trial(s, {"success": True})
@@ -395,3 +397,81 @@ class TestPacingSimulation:
         total = sum(row[1] for row in engine.REALM_TABLE)
         assert total == 3450
         assert self.run(engine, self.tag_picker("explore")) == 345
+
+
+# ---------------------------------------------------------------- 杠杆 X：高风险行动波动收益
+class TestRiskVolatility:
+    """文档总览原称「机缘/风险系数」——高风险行动修为有 ± 宽幅随机波动，均值 1.0。"""
+
+    def test_low_risk_tags_never_fluctuate(self, engine):
+        for tag in ("cultivate", "rest", "trade", "other"):
+            assert engine._risk_coeff(tag) == 1.0
+            assert engine._risk_coeff(tag, roll=0.9) == 1.0   # 低风险即便指定 roll 也不波动
+
+    def test_bounds_with_explicit_roll(self, engine):
+        assert engine._risk_coeff("fight", roll=1.0) == pytest.approx(1.4)    # 1 + 0.40
+        assert engine._risk_coeff("fight", roll=-1.0) == pytest.approx(0.6)   # 1 - 0.40
+        assert engine._risk_coeff("explore", roll=1.0) == pytest.approx(1.18) # 1 + 0.18
+        assert engine._risk_coeff("explore", roll=-1.0) == pytest.approx(0.82)
+
+    def test_zero_roll_is_the_mean(self, engine):
+        assert engine._risk_coeff("fight", roll=0) == 1.0
+        assert engine._risk_coeff("explore", roll=0) == 1.0
+
+    def test_random_mean_is_near_one(self, engine):
+        rolls = [engine._risk_coeff("fight") for _ in range(3000)]
+        assert abs(sum(rolls) / len(rolls) - 1.0) < 0.04
+
+    def test_multiplier_carries_risk_detail(self, engine, base_state):
+        s = engine.sanitize_state({**base_state})
+        _, d = engine.cultivate_multiplier(s, "cultivate", risk_roll=0)
+        assert d["risk"] == 1.0 and d["risk_label"] == ""
+        _, d2 = engine.cultivate_multiplier(s, "fight", risk_roll=1.0)
+        assert d2["risk"] == pytest.approx(1.4)
+        assert d2["risk_label"] == "机缘"
+        _, d3 = engine.cultivate_multiplier(s, "fight", risk_roll=-1.0)
+        assert d3["risk_label"] == "事与愿违"
+
+    def test_volatility_enters_total_coeff(self, engine, base_state):
+        """满 roll 的斗法，综合系数应比均值明显更高（验证波动真的进了结算）。"""
+        s = engine.sanitize_state({**base_state, "spirit_root": "天灵根·火"})
+        _, mean = engine.cultivate_multiplier(s, "fight", risk_roll=0)
+        _, best = engine.cultivate_multiplier(s, "fight", risk_roll=1.0)
+        assert best["coeff"] > mean["coeff"] * 1.3
+
+
+# ---------------------------------------------------------------- 闭门剧情打断（文档 §5.2）
+class TestDisturbance:
+    """连修枯坐到阈值，强制砸一场「外界打扰」事件进来——惩罚（代码衰减）+ 叙事（打扰）双管齐下。"""
+
+    def test_prompt_note_only_when_secluded(self, engine, base_state):
+        s = engine.sanitize_state({**base_state, "cultivate_streak": 6})
+        assert isinstance(engine._seclusion_prompt_note(s, "cultivate"), str)   # 修行且达阈值
+        assert engine._seclusion_prompt_note(s, "explore") is None              # 非修行不触发
+        s2 = engine.sanitize_state({**base_state, "cultivate_streak": 5})
+        assert engine._seclusion_prompt_note(s2, "cultivate") is None           # 未达阈值
+
+    def test_disturbance_event_shape(self, engine):
+        ev = engine._disturbance_event()
+        tags = [c["tag"] for c in ev["choices"]]
+        assert "explore" in tags          # 必须给出「出门应对」走向
+        assert len(ev["choices"]) == 3
+
+    def test_mock_mode_injects_disturbance(self, engine, base_state, monkeypatch):
+        monkeypatch.setattr(engine, "API_KEY", "")
+        monkeypatch.setattr(engine, "_OPENAI_OK", False)
+        s = engine.sanitize_state({**base_state, "cultivate_streak": 7})
+        note = engine._seclusion_prompt_note(s, "cultivate")
+        data, meta = engine.generate_scene(s, {"text": "继续打坐"}, "", False, note)
+        assert meta.get("disturbance") is True
+        assert any(k in data["narrative"] for k in ("秘境", "访客", "邀约"))
+
+    def test_real_mode_sets_disturbance_flag(self, engine, base_state, monkeypatch):
+        monkeypatch.setattr(engine, "API_KEY", "x")
+        monkeypatch.setattr(engine, "_OPENAI_OK", True)
+        monkeypatch.setattr(engine, "_get_client", lambda: (_ for _ in ()).throw(
+            RuntimeError("强制走兜底")))
+        s = engine.sanitize_state({**base_state, "cultivate_streak": 8})
+        note = engine._seclusion_prompt_note(s, "cultivate")
+        data, meta = engine.generate_scene(s, {"text": "继续打坐"}, "", False, note)
+        assert meta.get("disturbance") is True     # 即便 AI 失败走兜底，标记仍在

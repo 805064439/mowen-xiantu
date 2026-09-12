@@ -82,6 +82,8 @@ export interface CultivateInfo {
   streak_coeff: number;  // 连击系数
   seclusion: number;     // 闭门衰减系数（1.0 = 未衰减）
   vitality: number;      // 状态修正
+  risk: number;          // 风险波动系数（高风险行动 ± 宽幅，均值 1.0）
+  risk_label: string;    // 波动标注：机缘 / 事与愿违 / 空
   secluded: boolean;     // 是否处于闭门造车状态
   capped: boolean;       // 是否被单轮上限截断
   base?: number;         // AI 给出的原始修为（未乘系数）
@@ -96,6 +98,7 @@ export interface EngineMeta {
   tokens_out?: number;
   memory_compressed?: boolean;
   cultivate?: CultivateInfo;   // 本轮修炼节奏明细
+  disturbance?: boolean;       // 本轮是否触发了「闭门造车·外界打扰」事件
 }
 
 export interface ActResponse {

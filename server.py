@@ -268,6 +268,39 @@ SECLUSION_DECAY = 0.6      # 每多枯坐一轮，效率再打六折
 SECLUSION_FLOOR = 0.3      # 衰减下限，不至于彻底卡死
 SECLUSION_HINT = "闭门日久，进境渐滞——该出去走走了。"
 
+# 闭门剧情打断（文档 §5.2）：连修枯坐到阈值，强制砸一场「外界打扰」进来。
+# 与 _seclusion_coeff 的代码衰减并存——一个管「惩罚（修为变慢）」，一个管「叙事（剧情推进）」。
+DISTURBANCE_EVENT = {
+    "narrative": "你正盘膝入定，忽闻门外一阵叩响。一名风尘仆仆的青衣修士立在院中，"
+                 "笑道：「道友闭关许久，可还记得山外的事？我此来正有一桩机缘要与你说——"
+                 "三日后宗门有秘境开启，错过便要再等三年。」檐下风过，你心头久违地活泛起来。",
+    "choices": [
+        {"text": "应下邀约，三日后同赴秘境", "risk": "mid", "tag": "explore"},
+        {"text": "先出门采买些丹药符箓，以备远行", "risk": "low", "tag": "trade"},
+        {"text": "婉拒来人，继续枯坐行功", "risk": "low", "tag": "cultivate"},
+    ],
+    "delta": {"hp": 0, "qi": 2, "exp": 4, "spirit_stones": 0,
+              "items_add": [], "items_remove": []},
+    "npc_updates": [{"name": "青衣修士", "title": "访客", "delta": 4}],
+    "memory": "闭关中忽有访客邀约秘境",
+}
+
+
+def _seclusion_prompt_note(state: dict, action_tag: str) -> str | None:
+    """闭门造车达阈值时，给真实 AI 注入「外界打扰」强制剧情指令。
+    演武/兜底路径由 DISTURBANCE_EVENT 顶上，此函数只管「真天道」一脉。"""
+    if action_tag in CULTIVATE_TAGS and _to_int(state.get("cultivate_streak"), 0) >= SECLUSION_STREAK:
+        return ("【剧情触发·外界打扰】你已闭关枯坐多日足不出户，修行渐有滞涩。本轮剧情请安排一次"
+                "「外界打扰」事件：可是一位故人/旧识忽然寻上门来、一封自山外送到的急报、"
+                "或一桩主动找上你的机缘或麻烦，借此打破其单调的闭关；并在后续选项中给出"
+                "至少一个「出门应对」的走向，让玩家有机会走出门去。")
+    return None
+
+
+def _disturbance_event() -> dict:
+    """演武/兜底模式下「闭门造车」触发的外界打扰事件（每次返回新副本，避免共享可变状态）。"""
+    return _deepish_copy(DISTURBANCE_EVENT)
+
 # 单轮修为上限：任何境界都至少要两轮才能圆满，杜绝「天灵根+满连击」一轮破境
 SINGLE_TURN_EXP_CAP = 0.5
 
@@ -304,7 +337,30 @@ def _vitality_coeff(state: dict) -> float:
     return 0.7 + 0.3 * (hp_ratio * 0.5 + qi_ratio * 0.5)
 
 
-def cultivate_multiplier(state: dict, action_tag: str) -> tuple[float, dict]:
+# 杠杆 X（文档总览原称「机缘/风险系数」）：高风险行动修为有波动收益。
+# 斗法/探索凭本事与机缘吃饭，一轮可能大进、也可能空手——均值 1.0，但带 ± 宽幅。
+# 低风险行动（cultivate/rest/trade/other）不波动，保证「基准线」稳定可测。
+RISK_VOLATILITY = {
+    "fight": 0.40,    # 斗法拼杀：凶险换来高期望，亦可能铩羽空手
+    "explore": 0.18,  # 外出探索：机缘随机，常有意外之喜或落空
+}
+_risk_rng = random.Random()   # 独立随机流，测试可 seed 复现
+
+
+def _risk_coeff(action_tag: str, roll: float | None = None) -> float:
+    """高风险行动的随机波动系数，落在 [1-vol, 1+vol]。
+
+    roll 为 [-1,1] 的指定值（测试用，0=均值不波动）；为 None 时用引擎随机流。
+    """
+    vol = RISK_VOLATILITY.get(action_tag, 0.0)
+    if vol <= 0:
+        return 1.0
+    if roll is None:
+        roll = _risk_rng.random() * 2 - 1
+    return 1.0 + clamp(roll, -1.0, 1.0) * vol
+
+
+def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None = None) -> tuple[float, dict]:
     """本轮修为的总系数 = 灵根 × 行动 × 连击 × 状态 × 闭门惩罚。
     返回 (系数, 明细)；明细直接进 engine_meta.cultivate，供前端把速度「摆给玩家看」。"""
     root_coeff, _ = spirit_root_info(state.get("spirit_root"))
@@ -315,7 +371,15 @@ def cultivate_multiplier(state: dict, action_tag: str) -> tuple[float, dict]:
     streak_coeff = _cultivate_streak_coeff(state) if is_cultivating else 1.0
     vitality_coeff = _vitality_coeff(state)
     seclusion_coeff = _seclusion_coeff(streak_now) if is_cultivating else 1.0
-    total = root_coeff * action_coeff * streak_coeff * vitality_coeff * seclusion_coeff
+    risk_coeff = _risk_coeff(action_tag, risk_roll)
+    total = root_coeff * action_coeff * streak_coeff * vitality_coeff * seclusion_coeff * risk_coeff
+
+    if risk_coeff > 1.001:
+        risk_label = "机缘"
+    elif risk_coeff < 0.999:
+        risk_label = "事与愿违"
+    else:
+        risk_label = ""
 
     detail = {
         "coeff": round(total, 2),
@@ -326,6 +390,8 @@ def cultivate_multiplier(state: dict, action_tag: str) -> tuple[float, dict]:
         "streak_coeff": streak_coeff,
         "seclusion": round(seclusion_coeff, 2),
         "vitality": round(vitality_coeff, 2),
+        "risk": round(risk_coeff, 2),
+        "risk_label": risk_label,
         "secluded": seclusion_coeff < 1.0,
         "capped": False,
     }
@@ -1349,18 +1415,22 @@ def _slice_text(t, size=24):
         yield t[i:i + size]
 
 
-def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_newly: bool = False):
+def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_newly: bool = False,
+                              forced_event: str | None = None):
     """real 模式流式生成。yield ("delta", 增量文本) / ("retry", None)。
     生成器 return (data, meta)：流式+校验成功 → AI 数据；否则降级 generate_scene（含重试与兜底）。"""
     t0 = time.time()
     ext = NarrativeStreamExtractor()
     try:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly)},
+        ]
+        if forced_event:
+            messages.append({"role": "user", "content": forced_event})
         stream = _get_client().chat.completions.create(
             model=MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly)},
-            ],
+            messages=messages,
             response_format={"type": "json_object"},
             temperature=0.95,
             max_tokens=700,
@@ -1388,6 +1458,7 @@ def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_n
             "source": "deepseek-stream", "model": MODEL,
             "elapsed_ms": int((time.time() - t0) * 1000),
             "retries": 0, "tokens_in": tokens_in, "tokens_out": tokens_out,
+            "disturbance": bool(forced_event),
         }
     except Exception:
         pass  # 流式失败（断流/解析/校验）→ 静默降级
@@ -1424,10 +1495,16 @@ def _validate_ai_output(data: Any) -> None:
         raise ValueError("delta 不是对象")
 
 
-def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool = False) -> tuple[dict, dict]:
-    """AI 生成 → 解析校验 → 失败错误回喂重试 1 次 → 仍失败走兜底事件池。"""
+def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool = False,
+                   forced_event: str | None = None) -> tuple[dict, dict]:
+    """AI 生成 → 解析校验 → 失败错误回喂重试 1 次 → 仍失败走兜底事件池。
+    forced_event 非空时（闭门造车达阈值）：演武路径直接给外界打扰事件，真天道路径把指令塞进 prompt。"""
     t0 = time.time()
     if not (API_KEY and _OPENAI_OK):
+        if forced_event:
+            data = _disturbance_event()
+            return data, {"source": "mock", "model": "演武", "elapsed_ms": 30, "retries": 0,
+                          "tokens_in": 0, "tokens_out": 0, "disturbance": True}
         data = _mock_trial_scene(trial_text) or _deepish_copy(random.choice(MOCK_EVENTS))
         return data, {"source": "mock", "model": "演武", "elapsed_ms": 30, "retries": 0,
                       "tokens_in": 0, "tokens_out": 0}
@@ -1436,6 +1513,8 @@ def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool 
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly)},
     ]
+    if forced_event:
+        messages.append({"role": "user", "content": forced_event})
     retries = 0
     tokens_in = tokens_out = 0
     for attempt in range(2):
@@ -1457,7 +1536,8 @@ def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool 
             data["memory"] = str(data.get("memory", ""))[:60]
             return data, {"source": "deepseek", "model": MODEL,
                           "elapsed_ms": int((time.time() - t0) * 1000),
-                          "retries": retries, "tokens_in": tokens_in, "tokens_out": tokens_out}
+                          "retries": retries, "tokens_in": tokens_in, "tokens_out": tokens_out,
+                          "disturbance": bool(forced_event)}
         except Exception as e:  # 解析/校验失败 → 错误回喂重试
             retries += 1
             messages.append({"role": "assistant", "content": raw[:800] or "（空输出）"})
@@ -1468,7 +1548,8 @@ def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool 
     data = _deepish_copy(random.choice(FALLBACK_EVENTS))
     return data, {"source": "fallback", "model": "天道补全",
                   "elapsed_ms": int((time.time() - t0) * 1000),
-                  "retries": retries, "tokens_in": tokens_in, "tokens_out": tokens_out}
+                  "retries": retries, "tokens_in": tokens_in, "tokens_out": tokens_out,
+                  "disturbance": bool(forced_event)}
 
 
 # ---------------------------------------------------------------- 演武事件池（无 key 用）
@@ -1760,14 +1841,14 @@ def health():
 
 
 def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
-                      action_tag: str = "other"):
+                      action_tag: str = "other", risk_roll: float | None = None):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
     action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。"""
     delta_applied = clamp_ai_delta(data.get("delta"), state)
     if delta_applied["exp"] > 0:
-        # 修为结算：AI 原始值 → 灵根 × 行动 × 连击 × 状态（+ 闭门惩罚）
-        coeff, detail = cultivate_multiplier(state, action_tag)
+        # 修为结算：AI 原始值 → 灵根 × 行动 × 连击 × 状态 × 闭门惩罚 × 风险波动
+        coeff, detail = cultivate_multiplier(state, action_tag, risk_roll)
         base = delta_applied["exp"]
         granted = int(base * coeff)
         # 单轮保底两回合：任何境界不可能一轮圆满
@@ -1904,8 +1985,9 @@ def act(req: ActReq):
         # ③ 应用突破判定（纯代码层）
         breakthrough_view = apply_trial(state, trial)
         # ④ AI（或演武/兜底）生成剧情 ⑤~⑨ 后处理共用
-        data, meta = generate_scene(state, action, trial_text, root_newly)
         action_tag = infer_action_tag(action)
+        forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
+        data, meta = generate_scene(state, action, trial_text, root_newly, forced_event)
         narrative, choices, delta_applied, near_death_flag, npc_events = \
             _postprocess_turn(state, data, meta, action_text, action_tag)
         _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
@@ -1972,9 +2054,11 @@ def act_stream(req: ActReq):
                 return
             else:
                 breakthrough_view = apply_trial(state, trial)
+                action_tag = infer_action_tag(action)
+                forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
                 if API_KEY and _OPENAI_OK:
                     # ④ 流式真天道：边生成边推
-                    it = _narrative_events_from_ai(state, action, trial_text, root_newly)
+                    it = _narrative_events_from_ai(state, action, trial_text, root_newly, forced_event)
                     data = meta = None
                     while True:
                         try:
@@ -1988,14 +2072,18 @@ def act_stream(req: ActReq):
                             yield _sse("retry", {"message": "天机紊乱，凝神重推……"})
                 else:
                     # ④' 演武模式：本地事件切片流出（统一前端路径）
-                    data = _mock_trial_scene(trial_text) or _deepish_copy(random.choice(MOCK_EVENTS))
-                    meta = {"source": "mock", "model": "演武", "elapsed_ms": 30,
-                            "retries": 0, "tokens_in": 0, "tokens_out": 0}
+                    if forced_event:
+                        data = _disturbance_event()
+                        meta = {"source": "mock", "model": "演武", "elapsed_ms": 30,
+                                "retries": 0, "tokens_in": 0, "tokens_out": 0, "disturbance": True}
+                    else:
+                        data = _mock_trial_scene(trial_text) or _deepish_copy(random.choice(MOCK_EVENTS))
+                        meta = {"source": "mock", "model": "演武", "elapsed_ms": 30,
+                                "retries": 0, "tokens_in": 0, "tokens_out": 0}
                     for piece in _slice_text(data["narrative"]):
                         yield _sse("delta", {"t": piece})
 
-            # ⑤~⑨ 与 /api/act 完全共用的后处理
-            action_tag = infer_action_tag(action)
+            # ⑤~⑨ 与 /api/act 完全共用的后处理（action_tag 已在上方闭门判定处算好）
             narrative, choices, delta_applied, near_death_flag, npc_events = \
                 _postprocess_turn(state, data, meta, action_text, action_tag)
             _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
