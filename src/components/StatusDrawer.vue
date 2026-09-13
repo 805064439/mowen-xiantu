@@ -3,7 +3,7 @@
    三围/背包实时响应（用丹不关抽屉，连嗑），物品点击直接服用。 */
 import { computed, ref, watch, onBeforeUnmount } from "vue";
 import { game } from "../stores/game";
-import { REALMS, EXP_MAX, itemInfo, canUseItem } from "../game/constants";
+import { REALMS, EXP_MAX, itemInfo, canUseItem, ageLevel, AGE_HINT, lifespanAvg } from "../game/constants";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const root = computed(() => game.state?.spirit_root || "");
@@ -24,6 +24,11 @@ const bars = computed(() => {
 
 const summary = computed(() => game.state?.memory_summary || "");
 const turn = computed(() => game.state?.turn ?? 0);
+const age = computed(() => game.state?.age ?? 16);
+const lifespan = computed(() => game.state?.lifespan ?? lifespanAvg(game.state?.realm_index ?? 0));
+const ageLv = computed(() => ageLevel(age.value / Math.max(lifespan.value, 1)));
+const agePctText = computed(() => Math.round(age.value / Math.max(lifespan.value, 1) * 100) + "%");
+const ageHint = computed(() => AGE_HINT[ageLv.value] || "");
 const npcs = computed(() => game.state?.npcs || []);
 
 /** 道缘数值 → 称谓（与后端 bond_label 同语义） */
@@ -91,6 +96,13 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
           <div class="bar-track"><div class="bar-fill" :style="{ width: pct(b.val, b.max) }"></div></div>
           <span class="bar-val">{{ b.val }}/{{ b.max }}</span>
         </div>
+      </div>
+
+      <div class="drawer-age" :class="'age-' + ageLv">
+        <span class="da-label">寿 元</span>
+        <span class="da-num">{{ age }} / {{ lifespan }} 岁</span>
+        <span class="da-pct">{{ agePctText }}</span>
+        <span class="da-hint">{{ ageHint || "来日方长" }}</span>
       </div>
 
       <div class="drawer-stones">灵石 <b>{{ game.state?.spirit_stones ?? 0 }}</b></div>

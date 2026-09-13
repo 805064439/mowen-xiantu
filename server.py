@@ -264,8 +264,8 @@ STREAK_STORE_MAX = 12      # 字段存储上限（真实轮数，需大于 SECLU
 # 连修保护：过封顶还枯坐＝闭门无功。注意门槛必须高于 STREAK_CAP，
 # 否则 1.4 档永远吃不到，又会变成「专心修行必被砍半」的假取舍。
 SECLUSION_STREAK = 6
-SECLUSION_DECAY = 0.6      # 每多枯坐一轮，效率再打六折
-SECLUSION_FLOOR = 0.3      # 衰减下限，不至于彻底卡死
+SECLUSION_DECAY = 0.8      # 每多枯坐一轮，效率再打八折（v2：0.6 → 0.8，惩罚不过火）
+SECLUSION_FLOOR = 0.6      # 衰减下限（v2：0.3 → 0.6），不至于彻底卡死
 SECLUSION_HINT = "闭门日久，进境渐滞——该出去走走了。"
 
 # 闭门剧情打断（文档 §5.2）：连修枯坐到阈值，强制砸一场「外界打扰」进来。
@@ -289,7 +289,7 @@ DISTURBANCE_EVENT = {
 def _seclusion_prompt_note(state: dict, action_tag: str) -> str | None:
     """闭门造车达阈值时，给真实 AI 注入「外界打扰」强制剧情指令。
     演武/兜底路径由 DISTURBANCE_EVENT 顶上，此函数只管「真天道」一脉。"""
-    if action_tag in CULTIVATE_TAGS and _to_int(state.get("cultivate_streak"), 0) >= SECLUSION_STREAK:
+    if action_tag in SECLUSION_TAGS and _to_int(state.get("seclusion_streak"), 0) >= SECLUSION_STREAK:
         return ("【剧情触发·外界打扰】你已闭关枯坐多日足不出户，修行渐有滞涩。本轮剧情请安排一次"
                 "「外界打扰」事件：可是一位故人/旧识忽然寻上门来、一封自山外送到的急报、"
                 "或一桩主动找上你的机缘或麻烦，借此打破其单调的闭关；并在后续选项中给出"
@@ -315,19 +315,38 @@ def _cultivate_streak_coeff(state: dict) -> float:
     return coeff
 
 
-def _seclusion_coeff(streak: int) -> float:
-    """闭门造车衰减：连修超过封顶后逐级打六折，逼玩家出门历练。未越界则为 1.0。"""
+def _seclusion_coeff(state: Any, action_tag: str = "cultivate") -> float:
+    """闭门造车衰减：连续「真·枯坐」超过阈值后逐级打折，逼玩家出门历练。
+
+    state 传 dict 时按 SECLUSION_TAGS 判定并取独立的 seclusion_streak；
+    传 int 时按旧签名直接当作枯坐轮数（兼容既有调用与用例）。
+    """
+    if isinstance(state, int):
+        streak = state
+    else:
+        if action_tag not in SECLUSION_TAGS:
+            return 1.0
+        streak = _to_int(state.get("seclusion_streak"), 0)
     if streak < SECLUSION_STREAK:
         return 1.0
     return max(SECLUSION_FLOOR, SECLUSION_DECAY ** (streak - SECLUSION_STREAK + 1))
 
 
 def _update_cultivate_streak(state: dict, action_tag: str) -> None:
-    """修行类行动累加连击（超过存储上限不再增长），其余行动清零。"""
+    """修行类行动累加连击（超过存储上限不再增长），其余行动清零。
+
+    枯坐计数（seclusion_streak）与连击计数（cultivate_streak）分开：
+    静养吃连击加成但不算枯坐，所以「连修 5 轮 + 静养 1 轮」不会撞上闭门衰减，
+    而「连闭关 6 轮」才会——这正是 v2 里「出门打断 > 死磕」的机制来源。
+    """
     if action_tag in CULTIVATE_TAGS:
         state["cultivate_streak"] = min(_to_int(state.get("cultivate_streak"), 0) + 1, STREAK_STORE_MAX)
     else:
         state["cultivate_streak"] = 0
+    if action_tag in SECLUSION_TAGS:
+        state["seclusion_streak"] = min(_to_int(state.get("seclusion_streak"), 0) + 1, STREAK_STORE_MAX)
+    else:
+        state["seclusion_streak"] = 0
 
 
 def _vitality_coeff(state: dict) -> float:
@@ -370,7 +389,8 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
     is_cultivating = action_tag in CULTIVATE_TAGS
     streak_coeff = _cultivate_streak_coeff(state) if is_cultivating else 1.0
     vitality_coeff = _vitality_coeff(state)
-    seclusion_coeff = _seclusion_coeff(streak_now) if is_cultivating else 1.0
+    # 只有「真·枯坐」才衰减：静养吃连击但不算闭门（SECLUSION_TAGS 与 CULTIVATE_TAGS 已分离）
+    seclusion_coeff = _seclusion_coeff(state, action_tag)
     risk_coeff = _risk_coeff(action_tag, risk_roll)
     total = root_coeff * action_coeff * streak_coeff * vitality_coeff * seclusion_coeff * risk_coeff
 
@@ -397,6 +417,177 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
     }
     return total, detail
 
+
+def time_exp_coeff(state: dict, action_tag: str, risk_roll: float | None = None) -> float:
+    """「按天产出」路径用的系数：灵根 × 连击 × 状态 × 闭门 × 风险。
+
+    不含 ACTION_CULTIVATE_COEFF——行动的快慢已由 DAY_EFF 表达（0.090 vs 0.002，差 45 倍），
+    再乘一遍行动系数就会双重计入，把 v2 的配平整体推翻。
+    """
+    total, _ = cultivate_multiplier(state, action_tag, risk_roll)
+    return total / ACTION_CULTIVATE_COEFF.get(action_tag, 1.0)
+
+
+# ---------------------------------------------------------------- 时间与寿元（v2 配平方案）
+# 设计意图：修为与时间同源——「修为 = 天数 × 日效率」，杜绝「逛三天坊市顶两年闭关」的时间作弊。
+# 寿元因此成为真实的资源：修得越久，离大限越近，越要在「闭关冲刺」与「出门机缘」之间取舍。
+#
+# 数值来源：《墨问仙途 — 时间/寿元系统 最终配平方案 v2》，
+# 全部经 2 万次/策略 蒙特卡洛仿真验证（见 tools/sim_lifespan.py）。
+DAYS_PER_YEAR = 360
+START_AGE = 16
+
+# 每轮行动消耗的天数区间（1 年 = 360 天）
+ACTION_DAYS = {
+    "cultivate": (270, 810),   # 闭关：9 月 ~ 2 年 3 月，岁月如梭
+    "rest":      (15, 45),     # 静养：半月 ~ 一月半
+    "explore":   (3, 15),      # 探索：数日
+    "trade":     (3, 10),      # 交易：数日
+    "fight":     (1, 3),       # 斗法：顷刻
+    "other":     (5, 20),      # 随缘：十数日
+}
+
+# 日效率：修为 = 天数 × 日效率 × 各项系数。行动差异已由此表表达，
+# 故按天产出路径不再叠加 ACTION_CULTIVATE_COEFF（否则重复计入）。
+DAY_EFF = {
+    "cultivate": 0.110,   # 29.7 ~ 89.1：最高效，但耗时最长（0.090 经实测过慢，见 sim_lifespan.py）
+    "rest":      0.030,   # 0.5 ~ 1.4
+    "explore":   0.004,   # 0.01 ~ 0.06：靠奇遇
+    "trade":     0.002,   # 0.006 ~ 0.02
+    "fight":     0.002,   # 0.002 ~ 0.006
+    "other":     0.005,   # 0.025 ~ 0.1
+}
+
+# 奇遇：非闭关路线的成长来源（闭关枯坐不生奇遇，这是它必须出门的理由）
+FORTUNE_CHANCE = {"explore": 0.22, "fight": 0.15, "trade": 0.05,
+                  "other": 0.06, "rest": 0.06, "cultivate": 0.0}
+FORTUNE_EXP = {"explore": (60, 240), "fight": (30, 120), "trade": (10, 60),
+               "other": (20, 90), "rest": (80, 200)}   # rest：静中悟道
+
+# AI 提议的修为是否叠加到「天数产出」之上。
+# 0.0 = 纯按天产出（v2 配平基线，AI 只管叙事）；1.0 = 两者相加（会显著加速，需重跑仿真）
+AI_EXP_WEIGHT = 0.0
+
+# 大境界：修为总需求与冲关率（分境界，取代单值常量）
+# 注：EXP_NEED[0] = 3450 恰为 REALM_TABLE 炼气九层之和，与现有逐层曲线自洽。
+EXP_NEED = [3450, 8800, 22600, 58000]
+BREAK_RATE = [0.35, 0.28, 0.22, 0.18]
+
+# 寿元表：(境界名, 下限, 上限)
+LIFESPAN_TABLE = [
+    ("炼气期", 140, 190),     # 均值 165
+    ("筑基期", 390, 510),     # 均值 450
+    ("金丹期", 1160, 1500),   # 均值 1330
+    ("元婴期", 3400, 4400),   # 均值 3900
+]
+LIFESPAN_SAFE_RATIO = 0.72   # 占寿元 72% 以下绝无寿终之虞
+
+# 静养续命：每 3 轮 rest 涨 3.5 岁，封顶 +60
+REST_LIFE_BONUS_EVERY = 3
+REST_LIFE_BONUS = 3.5
+REST_LIFE_BONUS_CAP = 60.0
+
+# 闭门造车：只有「真·枯坐」（cultivate）才衰减，静养（rest）不算枯坐；
+# 连击加成仍对静养生效（CULTIVATE_TAGS 见上）。两个计数器必须分开。
+SECLUSION_TAGS = ("cultivate",)
+
+LIFESPAN_DEATH_TEXT = (
+    "\n\n你忽然觉得手中的物事重得拿不住。窗外的日头还是那轮日头，" \
+    "可你听见自己心跳的间隙越来越长——像更漏将尽时，最后几滴水的迟疑。\n\n" \
+    "修行一世，终究没能熬过天命。这一世，就此作罢。"
+)
+
+# 寿元风险分级提示：不暴露精确概率，只给体感
+LIFESPAN_HINTS = (
+    (0.85, "鬓角微霜，修为渐觉凝滞", "faded"),
+    (1.00, "气血衰败，寿元将尽——当谋续命之策", "warn"),
+    (9.99, "大限已至，每一息皆是偷生", "dread"),
+)
+
+
+def _stage_of(realm_index: int) -> int:
+    """大境界序号：每 9 层一境 —— 0 炼气（0~8）、1 筑基（9~17）、2 金丹、3 元婴。"""
+    return clamp(_to_int(realm_index, 0) // 9, 0, len(LIFESPAN_TABLE) - 1)
+
+
+# 寿元掷骰走独立随机流：sanitize_state 每次都会补寿元，若共用全局流会挪动
+# 后续所有判定骰（斗法/突破）的序列，让「固定种子可复现」的用例集体漂移。
+_life_rng = random.Random()
+
+
+def roll_lifespan(stage: int | None = None) -> int:
+    """按大境界掷寿元上限。越界序号一律取表末（元婴）。"""
+    idx = 0 if stage is None else clamp(int(stage), 0, len(LIFESPAN_TABLE) - 1)
+    _, lo, hi = LIFESPAN_TABLE[idx]
+    return _life_rng.randint(lo, hi)
+
+
+def death_risk(age: int, limit: int) -> float:
+    """占寿元比例 → 本轮寿终概率。壮年 0%，过 72% 起渐衰，越限急剧升高。"""
+    r = age / max(limit, 1)
+    if r < LIFESPAN_SAFE_RATIO:
+        return 0.0
+    if r <= 0.85:
+        return (r - LIFESPAN_SAFE_RATIO) / (0.85 - LIFESPAN_SAFE_RATIO) * 0.02
+    if r <= 1.0:
+        return 0.02 + (r - 0.85) / 0.15 * 0.08
+    return min(0.10 + (r - 1.0) * 0.6, 0.95)
+
+
+def lifespan_hint(age: int, limit: int) -> tuple[str, str]:
+    """返回 (风险文案, 级别)。安全线内无提示。"""
+    r = age / max(limit, 1)
+    if r < LIFESPAN_SAFE_RATIO:
+        return "", "safe"
+    for bound, text, level in LIFESPAN_HINTS:
+        if r <= bound:
+            return text, level
+    return LIFESPAN_HINTS[-1][1], LIFESPAN_HINTS[-1][2]
+
+
+def age_info(state: dict) -> dict:
+    """前端状态栏用：年岁/寿元/占比/分级提示。"""
+    age = _to_int(state.get("age"), START_AGE)
+    limit = _to_int(state.get("lifespan"), 165)
+    text, level = lifespan_hint(age, limit)
+    return {
+        "age": age,
+        "lifespan": limit,
+        "ratio": round(age / max(limit, 1), 3),
+        "days": _to_int(state.get("days"), 0),
+        "stage": LIFESPAN_TABLE[_stage_of(_to_int(state.get("realm_index"), 0))][0],
+        "hint": text,
+        "level": level,
+        "life_bonus": _to_int(state.get("life_bonus"), 0),
+        "dead": bool(state.get("dead")),
+    }
+
+
+def action_exp(action_tag: str) -> tuple:
+    """本轮的时间与修为产出。返回 (修为, 天数, 是否奇遇)。
+
+    修为 = 天数 × 日效率（+ 奇遇补正）。天数同时驱动年岁推进——
+    时间与修为同源，是整套寿元系统的地基。
+    """
+    lo, hi = ACTION_DAYS.get(action_tag, (5, 20))
+    days = random.randint(lo, hi)
+    exp = days * DAY_EFF.get(action_tag, 0.005)
+    fortune = False
+    chance = FORTUNE_CHANCE.get(action_tag, 0.0)
+    if chance and random.random() < chance:
+        f_lo, f_hi = FORTUNE_EXP.get(action_tag, (10, 60))
+        exp += random.randint(f_lo, f_hi)
+        fortune = True
+    return exp, days, fortune
+
+
+def check_lifespan_death(state: dict) -> bool:
+    """寿元判定：越老越易死。返回是否寿终。必须在回合最末调用。"""
+    if random.random() < death_risk(_to_int(state.get("age"), START_AGE),
+                                    _to_int(state.get("lifespan"), 165)):
+        state["dead"] = True
+        return True
+    return False
 
 
 # ---------------------------------------------------------------- 史官压缩（远期记忆 → 前尘摘要）
@@ -571,6 +762,15 @@ def _to_int(v: Any, default: int = 0) -> int:
         return default
 
 
+def _to_float(v: Any, default: float = 0.0) -> float:
+    try:
+        if isinstance(v, bool):
+            return default
+        return float(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _deepish_copy(d: dict) -> dict:
     return json.loads(json.dumps(d, ensure_ascii=False))
 
@@ -580,11 +780,25 @@ def sanitize_state(raw: dict) -> dict:
     def _int(v, lo, hi, d):
         return clamp(_to_int(v, d), lo, hi)
 
+    def _flt(v, lo, hi, d):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            x = d
+        return max(lo, min(hi, x))
+
     # 脏输入（None / 数组 / 字符串）一律视为空档，绝不让异常穿透到接口层
     if not isinstance(raw, dict):
         raw = {}
 
     realm_index = _int(raw.get("realm_index"), 0, MAX_REALM_INDEX, 0)
+    # 时间与寿元：days 是唯一权威（age 由它推导，避免存档里两个字段打架）
+    days_total = _int(raw.get("days"), 0, 9999999, 0)
+    age_now = START_AGE + days_total // DAYS_PER_YEAR
+    stage_now = _stage_of(realm_index)
+    life_bonus = round(_flt(raw.get("life_bonus"), 0.0, REST_LIFE_BONUS_CAP, 0.0), 1)
+    _ls = _int(raw.get("lifespan"), 0, 5000, 0)
+    lifespan_now = clamp(_ls if _ls else roll_lifespan(stage_now), 100, 5000)
     hp_max = _int(raw.get("hp_max"), 100, 400, hp_max_of(realm_index))
     qi_max = _int(raw.get("qi_max"), 50, 250, qi_max_of(realm_index))
 
@@ -677,6 +891,14 @@ def sanitize_state(raw: dict) -> dict:
         "cultivate_streak": _int(raw.get("cultivate_streak"), 0, STREAK_STORE_MAX, 0),  # 连修轮数（连击加成）
         "last_near_death_turn": _int(raw.get("last_near_death_turn"), -999, 9999, -999),
         "turn": _int(raw.get("turn"), 0, 9999, 0),
+        # ---- 时间与寿元（v2）----
+        "days": days_total,                       # 累计天数（唯一权威）
+        "age": age_now,                           # 由 days 推导：START_AGE + days // 360
+        "lifespan": lifespan_now,                 # 寿元上限（突破大境界时重掷）
+        "life_bonus": life_bonus,                 # 静养续命累计（封顶 REST_LIFE_BONUS_CAP）
+        "rest_count": _int(raw.get("rest_count"), 0, 9999, 0),
+        "seclusion_streak": _int(raw.get("seclusion_streak"), 0, STREAK_STORE_MAX, 0),  # 枯坐轮数（仅 cultivate）
+        "dead": bool(raw.get("dead")),            # 已寿终（轮回前不再推进）
     }
 
 
@@ -725,6 +947,12 @@ def apply_trial(state: dict, trial: dict | None) -> dict | None:
         state["hp"] = state["hp_max"]
         state["qi"] = state["qi_max"]
         state["fail_streak"] = 0  # 成功重置保底
+        # 跨大境界：寿元重掷（这是玩家「续命」的正途，与静养续命叠加计算）
+        if _stage_of(state["realm_index"]) != _stage_of(level):
+            old_ls = _to_int(state.get("lifespan"), 0)
+            state["lifespan"] = roll_lifespan(_stage_of(state["realm_index"])) \
+                + int(state.get("life_bonus") or 0)
+            view["lifespan_gain"] = state["lifespan"] - old_ls
     else:
         fail_streak = state.get("fail_streak", 0)
         # 修为折损递减：首次保留 70%，其后每败一次 +5%，封顶 85%
@@ -1776,12 +2004,16 @@ def _ending_payload(state: dict, action_text: str) -> dict:
     单独抽成函数而非各自内联，是为了从代码层面钉死「两路簿记永不分叉」——
     此前 stream 路径会额外叠加一次常规后处理，导致轮次、记忆与修炼消耗重复记账。
     """
+    old_ls = _to_int(state.get("lifespan"), 0)
     state["realm_index"] = MAX_REALM_INDEX
     state["exp"] = 0
     state["hp_max"] += 30
     state["qi_max"] += 15
     state["hp"] = state["hp_max"]
     state["qi"] = state["qi_max"]
+    # 炼气 → 筑基：寿元重掷（140~190 → 390~510），这一跳就是「筑基」的全部意义
+    if _stage_of(MAX_REALM_INDEX) != _stage_of(8):
+        state["lifespan"] = roll_lifespan(_stage_of(MAX_REALM_INDEX)) + int(state.get("life_bonus") or 0)
 
     narrative = ENDING_TEXT
     memory_line = "冲击筑基功成，踏入筑基初期"
@@ -1808,9 +2040,11 @@ def _ending_payload(state: dict, action_text: str) -> dict:
         "delta_applied": {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
                           "items_add": [], "items_remove": []},
         "npc_events": [],
-        "breakthrough": {"success": True, "from": realm_name(8), "to": FOUNDATION},
+        "breakthrough": {"success": True, "from": realm_name(8), "to": FOUNDATION,
+                         "lifespan_gain": state["lifespan"] - old_ls},
         "near_death": False,
         "ending": True,
+        "dead": False,
         "engine_meta": meta,
     }
 
@@ -1844,12 +2078,21 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
                       action_tag: str = "other", risk_roll: float | None = None):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
-    action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。"""
+    action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。
+
+    修为结算改为「按天产出」（v2）：先掷本轮天数 → 修为 = 天数 × 日效率（+ 奇遇补正），
+    再乘 灵根 × 连击 × 状态 × 闭门 × 风险。时间与修为同源，寿元才有意义。"""
     delta_applied = clamp_ai_delta(data.get("delta"), state)
-    if delta_applied["exp"] > 0:
-        # 修为结算：AI 原始值 → 灵根 × 行动 × 连击 × 状态 × 闭门惩罚 × 风险波动
-        coeff, detail = cultivate_multiplier(state, action_tag, risk_roll)
-        base = delta_applied["exp"]
+    ai_exp = delta_applied["exp"]
+    day_exp, days, fortune = action_exp(action_tag)
+    if ai_exp < 0:
+        # AI 判定的修为折损（走火入魔、散功等）原样保留，不与时间产出对冲
+        seclusion_hint = False
+    else:
+        # 修为 = （天数 × 日效率 + AI 叙事所得 × 权重）× 各项系数
+        base = day_exp + ai_exp * AI_EXP_WEIGHT
+        coeff_full, detail = cultivate_multiplier(state, action_tag, risk_roll)
+        coeff = coeff_full / ACTION_CULTIVATE_COEFF.get(action_tag, 1.0)  # 行动差异已由 DAY_EFF 表达
         granted = int(base * coeff)
         # 单轮保底两回合：任何境界不可能一轮圆满
         cap = max(1, int(exp_max_of(state["realm_index"]) * SINGLE_TURN_EXP_CAP))
@@ -1857,11 +2100,14 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
             granted = cap
             detail["capped"] = True
         delta_applied["exp"] = granted
-        detail["base"] = base
+        detail["coeff"] = round(coeff, 2)
+        detail["base"] = round(base, 1)
+        detail["days"] = days
+        detail["day_exp"] = round(day_exp, 1)
+        detail["fortune"] = fortune
+        detail["ai_exp"] = ai_exp
         meta["cultivate"] = detail
         seclusion_hint = detail["secluded"]
-    else:
-        seclusion_hint = False
     apply_delta(state, delta_applied)
     _update_cultivate_streak(state, action_tag)   # 连击在结算之后累加，本轮不吃自己
     # 修炼消耗（经济回收口）：每轮维持修为的灵气补给，灵石不足时不扣
@@ -1883,21 +2129,49 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         near_death_flag = True
     if seclusion_hint:
         narrative = narrative + "\n\n" + SECLUSION_HINT
+
+    # ---- ⑤ 推进时间（本轮天数 → 年岁）----
+    state["days"] = _to_int(state.get("days"), 0) + days
+    state["age"] = START_AGE + state["days"] // DAYS_PER_YEAR
+
+    # ---- ⑥ 静养续命：每 3 轮 rest，寿元上限 +3.5（封顶 +60）----
+    if action_tag == "rest":
+        state["rest_count"] = _to_int(state.get("rest_count"), 0) + 1
+        if state["rest_count"] % REST_LIFE_BONUS_EVERY == 0:
+            bonus_now = _to_float(state.get("life_bonus"), 0.0)
+            bonus_new = min(bonus_now + REST_LIFE_BONUS, REST_LIFE_BONUS_CAP)
+            gained = int(bonus_new) - int(bonus_now)   # 只在跨过整岁时真正加到寿元上
+            state["life_bonus"] = round(bonus_new, 1)
+            if gained > 0:
+                state["lifespan"] = _to_int(state.get("lifespan"), 165) + gained
+                meta["life_extended"] = gained
+
     npc_events = apply_npc_updates(state, data)
     check_npc_events(state)
     choices = normalize_choices(data.get("choices"), state)
     state["turn"] += 1
+
+    # ---- ⑦ 寿元判定：必须放在回合最末 ----
+    lifespan_dead = (not state.get("dead")) and check_lifespan_death(state)
+    if lifespan_dead:
+        narrative = narrative + LIFESPAN_DEATH_TEXT
+        memory_line = memory_line or f"寿元耗尽，{state['age']}岁坐化"
+        meta["lifespan_death"] = True
+
     if memory_line:
         state["memory"].append(memory_line)
         state["memory"] = state["memory"][-20:]
     state["recent"].append({"action": action_text, "narrative": narrative[:400]})
     state["recent"] = state["recent"][-2:]
     update_style_echo(state, narrative)
+    meta["age"] = age_info(state)
     try:
         if compress_memory(state):
             meta["memory_compressed"] = True
     except Exception:
         pass
+    # 寿终经 meta 回传（meta["lifespan_death"]），保持五元组返回契约不变，
+    # 既有用例与两路簿记都不受影响（/api/act 与 /api/act/stream 各自读同一个 meta）
     return narrative, choices, delta_applied, near_death_flag, npc_events
 
 
@@ -1953,10 +2227,34 @@ def shop(req: ShopReq):
     return {"ok": False, "error": {"code": "UNKNOWN_OP", "message": "未知操作"}}
 
 
+def _dead_payload(state: dict) -> dict:
+    """寿终守卫：玩家已寿终，任何后续行动只回寿终响应，不再推进世界。
+
+    后端两路端点（/api/act 与 /api/act/stream）共用，杜绝「死后仍能行动 /
+    无限续命」——否则 check_lifespan_death 因 not state.get("dead") 守卫不再触发，
+    但回合照常推进时间、修为、机缘，等于永生。
+    """
+    return {
+        "ok": True,
+        "dead": True,
+        "ending": True,
+        "state": state,
+        "narrative": "尘缘已断，此身归于黄土。若要重开一世，请择「重启轮回」。",
+        "choices": [],
+        "delta_applied": {},
+        "npc_events": [],
+        "breakthrough": None,
+        "near_death": False,
+        "engine_meta": {"lifespan_death": True},
+    }
+
+
 @app.post("/api/act")
 def act(req: ActReq):
     try:
         state = sanitize_state(req.state or {})
+        if state.get("dead"):
+            return _dead_payload(state)
         action = req.action or {}
         action_type = str(action.get("type", "choice"))
         action_text = str(action.get("text", ""))[:40] or "未言明的行动"
@@ -2002,6 +2300,7 @@ def act(req: ActReq):
             "breakthrough": breakthrough_view,
             "near_death": near_death_flag,
             "ending": bool(trial and trial.get("ending")),
+            "dead": bool(meta.get("lifespan_death")),
             "engine_meta": meta,
         }
     except Exception as e:
@@ -2019,6 +2318,9 @@ def act_stream(req: ActReq):
     def gen():
         try:
             state = sanitize_state(req.state or {})
+            if state.get("dead"):
+                yield _sse("done", _dead_payload(state))
+                return
             action = req.action or {}
             action_type = str(action.get("type", "choice"))
             action_text = str(action.get("text", ""))[:40] or "未言明的行动"
@@ -2099,6 +2401,7 @@ def act_stream(req: ActReq):
                 "breakthrough": breakthrough_view,
                 "near_death": near_death_flag,
                 "ending": bool(trial and trial.get("ending")),
+                "dead": bool(meta.get("lifespan_death")),
                 "engine_meta": meta,
             })
         except Exception as e:

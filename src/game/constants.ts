@@ -152,8 +152,8 @@ export function actionInfo(tag?: string): ActionInfo {
 export const STREAK_TABLE: [number, number][] = [[0, 1.0], [2, 1.1], [3, 1.2], [5, 1.4]];
 export const STREAK_CAP = 5;          // 加成封顶轮数
 export const SECLUSION_STREAK = 6;    // 越此轮数起「闭门造车」，效率衰减
-export const SECLUSION_DECAY = 0.6;
-export const SECLUSION_FLOOR = 0.3;
+export const SECLUSION_DECAY = 0.8;   // v2：0.6 → 0.8（惩罚不过火）
+export const SECLUSION_FLOOR = 0.6;   // v2：0.3 → 0.6（不至于彻底卡死）
 
 /** 当前连修轮数对应的加成系数（只用于展示，真值以后端为准） */
 export function streakCoeff(streak: number): number {
@@ -173,4 +173,82 @@ export function seclusionCoeff(streak: number): number {
 /** 把系数写成飘字用的短标签：「潜心修行 ×2.39」 */
 export function coeffLabel(coeff: number): string {
   return `×${coeff.toFixed(2)}`;
+}
+
+/* -----------------------------------------------------------------------
+   时间与寿元：与后端 server.py 的 DAYS_PER_YEAR / ACTION_DAYS / DAY_EFF /
+   LIFESPAN_TABLE 同源（改动须两边一起改，tests/frontend/lifespan.spec.ts 盯着）。
+
+   修为 = 天数 × 日效率 —— 时间与修为同源，所以「花三年闭关」和「逛三天坊市」
+   不再等价，寿元才成为真实资源。
+   ----------------------------------------------------------------------- */
+export const DAYS_PER_YEAR = 360;
+export const START_AGE = 16;
+
+/** 每轮行动消耗的天数区间（闭关动辄经年，斗法不过顷刻） */
+export const ACTION_DAYS: Record<string, [number, number]> = {
+  cultivate: [270, 810],
+  rest: [15, 45],
+  explore: [3, 15],
+  trade: [3, 10],
+  fight: [1, 3],
+  other: [5, 20],
+};
+
+/** 日效率：修为 = 天数 × 日效率 × 各项系数 */
+export const DAY_EFF: Record<string, number> = {
+  cultivate: 0.110,
+  rest: 0.030,
+  explore: 0.004,
+  trade: 0.002,
+  fight: 0.002,
+  other: 0.005,
+};
+
+/** 寿元区间（按大境界） */
+export const LIFESPAN_TABLE: [string, number, number][] = [
+  ["炼气期", 140, 190],
+  ["筑基期", 390, 510],
+  ["金丹期", 1160, 1500],
+  ["元婴期", 3400, 4400],
+];
+export const LIFESPAN_SAFE_RATIO = 0.72;  // 占寿元 72% 以下绝无寿终之虞
+export const REST_LIFE_BONUS_EVERY = 3;   // 每 3 轮静养
+export const REST_LIFE_BONUS = 3.5;       // 寿元上限 +3.5 岁（封顶 60）
+export const REST_LIFE_BONUS_CAP = 60;
+
+/** 大境界序号：每 9 层一境 */
+export function stageOf(realmIndex: number): number {
+  return Math.max(0, Math.min(LIFESPAN_TABLE.length - 1, Math.floor(realmIndex / 9)));
+}
+
+/** 按大境界取寿元均值（无存档时的兜底展示值） */
+export function lifespanAvg(realmIndex: number): number {
+  const [, lo, hi] = LIFESPAN_TABLE[stageOf(realmIndex)];
+  return Math.round((lo + hi) / 2);
+}
+
+/** 占寿元比例 → 风险分级（不暴露精确概率，只给体感） */
+export function ageLevel(ratio: number): "safe" | "faded" | "warn" | "dread" {
+  if (ratio < LIFESPAN_SAFE_RATIO) return "safe";
+  if (ratio <= 0.85) return "faded";
+  if (ratio <= 1.0) return "warn";
+  return "dread";
+}
+
+export const AGE_HINT: Record<string, string> = {
+  safe: "",
+  faded: "鬓角微霜，修为渐觉凝滞",
+  warn: "气血衰败，寿元将尽——当谋续命之策",
+  dread: "大限已至，每一息皆是偷生",
+};
+
+/** 天数 → 人话（叙事用，飘字「岁月流逝」） */
+export function daysText(days: number): string {
+  if (days >= DAYS_PER_YEAR) {
+    const y = days / DAYS_PER_YEAR;
+    return y >= 2 ? `过了约 ${y.toFixed(1)} 年` : "过了一年有余";
+  }
+  if (days >= 30) return `过了约 ${Math.round(days / 30)} 个月`;
+  return `过了 ${days} 天`;
 }

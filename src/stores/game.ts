@@ -3,7 +3,7 @@
 
 import { reactive, computed } from "vue";
 import type { GameAction, GameState, Choice, ActResponse, ScenePara, FloatItem, EngineMeta, NpcEvent } from "../game/types";
-import { REALMS, OPENING, INIT_CHOICES, coeffLabel } from "../game/constants";
+import { REALMS, OPENING, INIT_CHOICES, coeffLabel, daysText } from "../game/constants";
 import {
   readSave, writeSave, removeSave, freshState, SAVE_KEY,
   loadReincarnations, saveReincarnations,
@@ -153,8 +153,13 @@ function applyScene(d: ActResponse) {
 }
 
 function applySceneEffects(d: ActResponse) {
-  if (d.breakthrough && d.breakthrough.success) playBreakthrough(d.breakthrough.to);
-  else if (d.breakthrough && !d.breakthrough.success) floatText("冲关失败", "f-neg");
+  if (d.breakthrough && d.breakthrough.success) {
+    playBreakthrough(d.breakthrough.to);
+    // 跨大境界重掷寿元——这是「修仙为何值得」最直观的一行数字
+    if (d.breakthrough.lifespan_gain) {
+      floatText(`寿元上限 +${d.breakthrough.lifespan_gain} 岁`, "f-item");
+    }
+  } else if (d.breakthrough && !d.breakthrough.success) floatText("冲关失败", "f-neg");
   if (d.near_death) {
     document.body.classList.add("near-death");
     setTimeout(() => document.body.classList.remove("near-death"), 1200);
@@ -166,12 +171,25 @@ function applySceneEffects(d: ActResponse) {
   if (d.engine_meta?.cultivate?.secluded) {
     floatText("闭门日久，进境渐滞", "f-neg");
   }
+  // 时间：闭关动辄经年，必须让玩家意识到「这一轮花掉了多少寿命」
+  const days = d.engine_meta?.cultivate?.days ?? 0;
+  if (days >= 30) floatText(daysText(days), "f-time");
+  // 奇遇：非闭关路线的主要成长来源，值得单独一跳
+  if (d.engine_meta?.cultivate?.fortune) floatText("【奇遇】忽有所悟", "f-item");
+  // 静养续命：把「寿元 +N」摆出来，静养才不是隐形机制
+  if (d.engine_meta?.life_extended) floatText(`寿元 +${d.engine_meta.life_extended} 岁`, "f-item");
   game.state = d.state;
   game.choices = d.choices;
   game.errorCard = null;
   game.inputLocked = false;        // 叙事完毕，恢复选项与自由输入
   if (d.ending && !game.ended) {
     game.ended = true;
+    setTimeout(() => { game.endingShown = true; }, 1400);
+  }
+  // 寿终：与筑基结局同一枚印章，但不再给选项——这一世到此为止
+  if (d.dead && !game.ended) {
+    game.ended = true;
+    game.choices = [];
     setTimeout(() => { game.endingShown = true; }, 1400);
   }
   save();
@@ -272,7 +290,8 @@ function removeScene(para: ScenePara) {
 }
 
 async function act(action: GameAction) {
-  if (game.loading || !game.state || (game.ended && action.type === "breakthrough")) return;
+  // 结局（筑基飞升 / 寿终坐化）后任何行动都不再受理，必须走「重启轮回」——杜绝「死后仍能动」
+  if (game.loading || !game.state || game.ended) return;
   game.loading = true;
   game.inputLocked = true;
   game.errorCard = null;

@@ -34,6 +34,27 @@ export interface GameState {
   cultivate_streak?: number;        // 连修轮数（连击加成；出门即断）
   last_near_death_turn?: number;    // 上次濒死轮次（冷却判定）
   turn: number;
+  /* ---- 时间与寿元（v2）---- */
+  days?: number;             // 累计天数（唯一权威，age 由它推导）
+  age?: number;              // 当前年岁
+  lifespan?: number;         // 寿元上限（突破大境界时重掷）
+  life_bonus?: number;       // 静养续命累计（封顶 60）
+  rest_count?: number;       // 累计静养轮数
+  seclusion_streak?: number; // 枯坐轮数（仅 cultivate 累加，出门/静养即断）
+  dead?: boolean;            // 已寿终
+}
+
+/** 寿元信息（engine_meta.age）——状态栏直接渲染 */
+export interface AgeInfo {
+  age: number;
+  lifespan: number;
+  ratio: number;      // age / lifespan
+  days: number;
+  stage: string;      // 炼气期 / 筑基期 …
+  hint: string;       // 分级风险文案（安全线内为空）
+  level: "safe" | "faded" | "warn" | "dread";
+  life_bonus: number;
+  dead: boolean;
 }
 
 /** 江湖人物卡：bond 为道缘，-100 死敌 ~ 100 生死之交 */
@@ -86,7 +107,19 @@ export interface CultivateInfo {
   risk_label: string;    // 波动标注：机缘 / 事与愿违 / 空
   secluded: boolean;     // 是否处于闭门造车状态
   capped: boolean;       // 是否被单轮上限截断
-  base?: number;         // AI 给出的原始修为（未乘系数）
+  base?: number;         // 本轮基础修为 = 天数 × 日效率（+ 奇遇）
+  days?: number;         // 本轮流逝天数
+  day_exp?: number;      // 本轮「时间沉淀」修为（未含奇遇与系数）
+  fortune?: boolean;     // 本轮是否触发奇遇
+  ai_exp?: number;       // AI 提议的修为（仅叙事参考，权重 0 时不入账）
+}
+
+/** 突破动画数据：跨大境界时附带寿元增量 */
+export interface Breakthrough {
+  success: boolean;
+  from: string;
+  to: string;
+  lifespan_gain?: number;  // 寿元上限增加（跨大境界重掷）
 }
 
 export interface EngineMeta {
@@ -99,6 +132,9 @@ export interface EngineMeta {
   memory_compressed?: boolean;
   cultivate?: CultivateInfo;   // 本轮修炼节奏明细
   disturbance?: boolean;       // 本轮是否触发了「闭门造车·外界打扰」事件
+  age?: AgeInfo;               // 本轮年岁/寿元/风险分级
+  life_extended?: number;      // 本轮静养续命增加的寿元
+  lifespan_death?: boolean;    // 本轮寿终
 }
 
 export interface ActResponse {
@@ -108,9 +144,10 @@ export interface ActResponse {
   choices: Choice[];
   delta_applied: DeltaApplied;
   npc_events?: NpcEvent[];   // 本轮道缘变化（用丹/结局轮为空）
-  breakthrough: { success: boolean; from: string; to: string } | null;
+  breakthrough: Breakthrough | null;
   near_death: boolean;
   ending: boolean;
+  dead?: boolean;            // 本轮寿终（寿元耗尽）
   engine_meta: EngineMeta;
   error?: { code: string; message: string };
 }

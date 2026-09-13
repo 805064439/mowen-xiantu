@@ -145,12 +145,12 @@ describe("连击与闭门公式与后端同源", () => {
     expect(streakCoeff(99)).toBe(1.4);
   });
 
-  it("seclusionCoeff 与后端 _seclusion_coeff 同式", () => {
+  it("seclusionCoeff 与后端 _seclusion_coeff 同式（v2：0.8 衰减 / 0.6 触底）", () => {
     expect(seclusionCoeff(5)).toBe(1.0);                                  // 未越界
-    expect(seclusionCoeff(6)).toBeCloseTo(0.6, 6);
-    expect(seclusionCoeff(7)).toBeCloseTo(0.36, 6);
-    expect(seclusionCoeff(8)).toBeCloseTo(0.3, 6);                        // 触底
-    expect(seclusionCoeff(50)).toBe(0.3);
+    expect(seclusionCoeff(6)).toBeCloseTo(0.8, 6);
+    expect(seclusionCoeff(7)).toBeCloseTo(0.64, 6);
+    expect(seclusionCoeff(8)).toBeCloseTo(0.6, 6);                        // 触底
+    expect(seclusionCoeff(50)).toBe(0.6);
   });
 });
 

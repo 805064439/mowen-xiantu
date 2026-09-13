@@ -5,6 +5,7 @@ import { game, actions } from "../stores/game";
 import {
   REALMS, EXP_MAX, itemInfo, canUseItem,
   actionInfo, streakCoeff, seclusionCoeff, STREAK_CAP, SECLUSION_STREAK,
+  ageLevel, AGE_HINT, lifespanAvg, REST_LIFE_BONUS, REST_LIFE_BONUS_EVERY,
 } from "../game/constants";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
@@ -37,6 +38,21 @@ const overflow = computed(() => {
 const shownNpcs = computed(() => (game.state?.npcs || []).slice(0, 3));
 const npcOverflow = computed(() => Math.max(0, (game.state?.npcs || []).length - 3));
 
+/* 年岁 / 寿元：寿元是本作唯一会「越用越少」的资源，必须常驻可见；
+   但只给分级提示，不暴露精确死亡率——玩家该感到压迫，而不是看着数字算概率。 */
+const age = computed(() => game.state?.age ?? 16);
+const lifespan = computed(() => game.state?.lifespan ?? lifespanAvg(game.state?.realm_index ?? 0));
+const ageRatio = computed(() => age.value / Math.max(lifespan.value, 1));
+const ageLv = computed(() => ageLevel(ageRatio.value));
+const ageHint = computed(() => AGE_HINT[ageLv.value] || "");
+const agePctText = computed(() => Math.round(ageRatio.value * 100) + "%");
+const lifeBonus = computed(() => game.state?.life_bonus ?? 0);
+const ageTitle = computed(() => {
+  const extra = lifeBonus.value > 0 ? `（含静养续命 +${Math.floor(lifeBonus.value)} 岁）` : "";
+  return `寿元上限 ${lifespan.value} 岁${extra}　占 ${agePctText.value}`
+    + `　静养每 ${REST_LIFE_BONUS_EVERY} 轮可续命 ${REST_LIFE_BONUS} 岁`;
+});
+
 /* 修行节奏：把「速度」摆在玩家眼前 —— 这是本次优化的核心可感知点。
    连修加成、闭门衰减、上一轮的行动与系数，三者合起来解释「我为什么快/慢」。 */
 const streak = computed(() => game.state?.cultivate_streak ?? 0);
@@ -64,6 +80,8 @@ function pct(v: number, max: number) {
   return Math.max(0, Math.min(100, v / max * 100)) + "%";
 }
 
+const ageBarPct = computed(() => Math.max(0, Math.min(100, ageRatio.value * 100)) + "%");
+
 /* 点道具不再直接服用：先看详情（功效/说明），在弹窗里再决定服不服 */
 function openItem(name: string) {
   game.itemDetail = name;
@@ -81,6 +99,16 @@ function openDrawer() {
       <div class="bar-track"><div class="bar-fill" :style="{ width: pct(b.val, b.max) }"></div></div>
       <span class="bar-val">{{ b.val }}/{{ b.max }}</span>
     </div>
+    <div class="stat-age" :class="'age-' + ageLv" v-if="game.state" :title="ageTitle">
+      <span class="age-label">年 岁</span>
+      <span class="age-num">{{ age }} 岁</span>
+      <span class="age-over">/ 寿元 {{ lifespan }}</span>
+      <span class="age-track"><span class="age-fill" :style="{ width: ageBarPct }"></span></span>
+      <span class="age-pct">{{ agePctText }}</span>
+      <span class="age-hint" v-if="ageHint">{{ ageHint }}</span>
+      <span class="age-safe" v-else>来日方长</span>
+    </div>
+
     <div class="stat-cult" :class="{ 'cult-secluded': secluded }" v-if="game.state">
       <span class="cult-label">修 行</span>
       <template v-if="secluded">

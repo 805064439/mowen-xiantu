@@ -67,6 +67,32 @@ def full_state(engine, base_state):
     return s
 
 
+@pytest.fixture
+def lock_days(engine, monkeypatch):
+    """锁定「按天产出」的天数与奇遇，让修为可精确断言。
+
+    调 lock_days(300) 后，本轮固定流逝 300 天且不触发奇遇；不传参则取该行动天数下限。
+    注意要在 _postprocess_turn 之前调用（sanitize_state 会掷寿元，别把它一起锁了）。
+    """
+    def _lock(days=None):
+        monkeypatch.setattr(engine.random, "randint", lambda a, b: days if days is not None else a)
+        monkeypatch.setattr(engine.random, "random", lambda: 1.0)   # 1.0 永不小于奇遇概率
+        return days
+    return _lock
+
+
+@pytest.fixture
+def expect_exp(engine):
+    """按「按天产出」模型算出本轮应得修为，与 _postprocess_turn 同一套公式。"""
+    def _exp(s, tag, days, risk_roll=0):
+        base = days * engine.DAY_EFF.get(tag, 0.005)
+        total, _ = engine.cultivate_multiplier(s, tag, risk_roll)
+        coeff = total / engine.ACTION_CULTIVATE_COEFF.get(tag, 1.0)
+        cap = max(1, int(engine.exp_max_of(s["realm_index"]) * engine.SINGLE_TURN_EXP_CAP))
+        return min(int(base * coeff), cap)
+    return _exp
+
+
 class FakeReq:
     """duck-typed ActReq：/api/act 只用到 action 与 last_choices 两个属性。"""
 

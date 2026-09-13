@@ -2,8 +2,11 @@
 """修炼节奏：行动系数 / 连击加成 / 状态修正 / tag 推断 / 闭门保护 / 单轮上限。
 
 这些数值是「玩家选择能否加速修行」的全部依据，一旦漂移，本文件必须先红。
-计算方法统一见 server.cultivate_multiplier：
-    最终 exp = AI_base × 灵根 × 行动系数 × 连击加成 × 状态修正（向下取整）
+
+v2 起修为改「按天产出」（见《时间/寿元系统 最终配平方案 v2》）：
+    最终 exp = (天数 × 日效率 + 奇遇) × 灵根 × 连击 × 状态 × 闭门衰减 × 风险波动
+行动差异已由 DAY_EFF 表达（0.110 vs 0.002），故该路径不再乘 ACTION_CULTIVATE_COEFF；
+行动系数表保留，仅供展示与兼容（coeff 明细里的 action_coeff 仍会回传前端）。
 """
 from __future__ import annotations
 
@@ -24,27 +27,41 @@ class TestActionCoefficient:
             assert tag in engine.ACTION_CULTIVATE_LABEL
             assert engine.ACTION_CULTIVATE_LABEL[tag]
 
-    @pytest.mark.parametrize("tag,expected", [
-        ("cultivate", 18),   # 10 × 1.8
-        ("rest", 13),        # 10 × 1.3
-        ("fight", 12),       # 10 × 1.2
-        ("explore", 10),     # 基准
-        ("trade", 8),        # 10 × 0.8
-        ("other", 10),
-        ("unknown_tag", 10),  # 未知 tag 退为基准，不得抛错
-    ])
-    def test_exp_scaled_by_action(self, engine, base_state, tag, expected):
+    @pytest.mark.parametrize("tag", ["cultivate", "rest", "fight", "explore",
+                                      "trade", "other", "unknown_tag"])
+    def test_exp_scaled_by_action(self, engine, base_state, tag, lock_days, expect_exp):
+        """修为 = 天数 × 日效率 × 系数；未知 tag 退为 other 的基准，不得抛错。"""
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
+        lo = engine.ACTION_DAYS.get(tag, (5, 20))[0]
+        lock_days(lo)   # 固定天数 + 关掉奇遇，验证公式本身
         _, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
-            {}, "行动", tag, risk_roll=0)   # 均值不波动，验证系数本身
-        assert delta["exp"] == expected
+            {}, "行动", tag, risk_roll=0)
+        assert delta["exp"] == expect_exp(s, tag, lo)
 
-    def test_cultivate_is_more_than_twice_trade(self, engine, base_state):
+    def test_ai_exp_does_not_leak_into_the_number(self, engine, base_state, lock_days, expect_exp):
+        """v2：AI 只管叙事，修为由代码按天产出——AI 提议的修为不再入账（AI_EXP_WEIGHT=0）。"""
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999})
+        lo = engine.ACTION_DAYS["cultivate"][0]
+        lock_days(lo)
+        _, _, low, _, _ = engine._postprocess_turn(
+            s, {"delta": {"exp": 1}, "choices": [], "narrative": "n", "memory": "m"},
+            {}, "行动", "cultivate", risk_roll=0)
+        s2 = engine.sanitize_state({**base_state, "spirit_stones": 999})
+        lock_days(lo)
+        meta = {}
+        _, _, high, _, _ = engine._postprocess_turn(
+            s2, {"delta": {"exp": 40}, "choices": [], "narrative": "n", "memory": "m"},
+            meta, "行动", "cultivate", risk_roll=0)
+        assert low == high                       # AI 给 1 还是 40，入账完全一样
+        assert meta["cultivate"]["ai_exp"] == 40  # 但仍在明细里留痕，便于排查
+
+    def test_cultivate_is_more_than_twice_trade(self, engine, base_state, lock_days):
         """潜心修行相对坊市交易必须拉开明显差距，否则取舍不成立。"""
         gains = {}
         for tag in ("cultivate", "trade"):
             s = engine.sanitize_state({**base_state, "spirit_stones": 999})
+            lock_days(engine.ACTION_DAYS[tag][0])
             _, _, delta, _, _ = engine._postprocess_turn(
                 s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
                 {}, "行动", tag)
@@ -112,20 +129,22 @@ class TestCultivateStreak:
     def test_streak_coeff_table(self, engine, streak, expected):
         assert engine._cultivate_streak_coeff({"cultivate_streak": streak}) == pytest.approx(expected)
 
-    def test_streak_bonus_applies_from_third_turn(self, engine, base_state):
+    def test_streak_bonus_grows_the_day_yield(self, engine, base_state, lock_days):
         """连修第 3 轮才吃到加成——第一轮的连击是 0，不能自肥。"""
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
+        days = engine.ACTION_DAYS["cultivate"][0]
         seen = []
         for _ in range(4):
+            lock_days(days)
             meta = {}
             _, _, delta, _, _ = engine._postprocess_turn(
                 s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
                 meta, "打坐", "cultivate")
             seen.append((s["cultivate_streak"], delta["exp"]))
-        assert seen[0] == (1, 18)     # 10 × 1.8
-        assert seen[1] == (2, 18)     # 连击 1 → 仍无加成
-        assert seen[2] == (3, 19)     # 连击 2 → 1.1 → 19.8
-        assert seen[3] == (4, 21)     # 连击 3 → 1.2 → 21.6
+        # 天数相同、系数随连击递增 → 修为必须单调不减，且第 3 轮起明显抬升
+        assert seen[0][1] == seen[1][1]      # 连击 0 / 1 都无加成
+        assert seen[2][1] > seen[1][1]       # 连击 2 → 1.1
+        assert seen[3][1] > seen[2][1]       # 连击 3 → 1.2
 
     def test_streak_survives_roundtrip(self, engine, base_state):
         """连击随存档往返：前端存了就得认，且被钳在合法区间。"""
@@ -150,11 +169,12 @@ class TestVitalityCoefficient:
         s = engine.sanitize_state({**base_state, "hp": hp, "qi": qi})
         assert engine._vitality_coeff(s) == pytest.approx(expected, abs=0.01)
 
-    def test_wounded_cultivation_is_slower(self, engine, base_state):
+    def test_wounded_cultivation_is_slower(self, engine, base_state, lock_days):
         """同样的打坐，重伤时收获更少——回血因此有了修行意义。"""
         results = {}
         for hp in (100, 40):
             s = engine.sanitize_state({**base_state, "spirit_stones": 999, "hp": hp, "qi": 50})
+            lock_days(engine.ACTION_DAYS["cultivate"][0])   # 天数一致，只比状态系数
             _, _, delta, _, _ = engine._postprocess_turn(
                 s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
                 {}, "打坐", "cultivate")
@@ -199,53 +219,65 @@ class TestCombinedRange:
 
 # ---------------------------------------------------------------- 保护机制
 class TestSafeguards:
-    def test_seclusion_penalty_after_cap(self, engine, base_state):
-        """连修越过加成封顶（第 6 轮）还枯坐 → 效率打六折 + 剧情提示出门。"""
-        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "cultivate_streak": 6})
+    def test_seclusion_penalty_after_cap(self, engine, base_state, lock_days):
+        """枯坐越过阈值（第 6 轮）仍不收手 → 效率打八折（v2：0.6 → 0.8）+ 剧情提示出门。"""
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999,
+                                   "cultivate_streak": 6, "seclusion_streak": 6})
+        lock_days(engine.ACTION_DAYS["cultivate"][0])
         meta = {}
         narrative, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 10}, "choices": [], "narrative": "你闭目行功。", "memory": "m"},
             meta, "闭关苦修", "cultivate")
-        # 1.8 × 1.4 = 2.52 → 再 ×0.6 = 1.512 → 15
         assert meta["cultivate"]["secluded"] is True
-        assert meta["cultivate"]["seclusion"] == 0.6
-        assert delta["exp"] == 15
+        assert meta["cultivate"]["seclusion"] == pytest.approx(0.8)
+        assert delta["exp"] > 0
         assert engine.SECLUSION_HINT in narrative
 
     @pytest.mark.parametrize("streak,expected", [
-        (5, 25),   # 刚好吃满加成：1.8 × 1.4 = 2.52
-        (6, 15),   # ×0.6
-        (7, 9),    # ×0.36
-        (8, 7),    # ×0.216 → 触底 0.3 → 1.8×1.4×0.3 = 0.756
-        (12, 7),   # 触底后不再恶化，但不至于归零
+        (5, 1.0),   # 未越界：不衰减
+        (6, 0.8),   # 0.8^1
+        (7, 0.64),  # 0.8^2
+        (8, 0.6),   # 0.8^3 = 0.512 → 触底 0.6
+        (12, 0.6),  # 触底后不再恶化，但不至于归零
     ])
     def test_seclusion_decays_with_floor(self, engine, base_state, streak, expected):
-        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "cultivate_streak": streak})
-        _, _, delta, _, _ = engine._postprocess_turn(
-            s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
-            {}, "枯坐", "cultivate")
-        assert delta["exp"] == expected
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "seclusion_streak": streak})
+        assert engine._seclusion_coeff(s, "cultivate") == pytest.approx(expected)
+
+    def test_rest_keeps_streak_but_breaks_seclusion(self, engine, base_state):
+        """v2 的关键分离：静养吃连击加成，但不算枯坐——闭门只惩罚真正的死磕。"""
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999})
+        for _ in range(5):
+            engine._update_cultivate_streak(s, "cultivate")
+        engine._update_cultivate_streak(s, "rest")
+        assert s["cultivate_streak"] == 6      # 连击继续攒
+        assert s["seclusion_streak"] == 0      # 枯坐归零 → 不吃衰减
+        assert engine._seclusion_coeff(s, "cultivate") == 1.0
+        assert engine._cultivate_streak_coeff(s) == 1.4
 
     def test_cap_is_reachable_before_penalty(self, engine):
         """封顶档必须落在惩罚之前——否则 1.4 加成永远吃不到，取舍就成了假的。"""
         assert engine.STREAK_CAP < engine.SECLUSION_STREAK
 
-    def test_seclusion_does_not_hit_exploration(self, engine, base_state):
+    def test_seclusion_does_not_hit_exploration(self, engine, base_state, lock_days):
         """闭门惩罚只针对枯坐，出门照样全额。"""
-        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "cultivate_streak": 9})
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999,
+                                   "cultivate_streak": 9, "seclusion_streak": 9})
+        lock_days(engine.ACTION_DAYS["explore"][0])
         meta = {}
         narrative, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 10}, "choices": [], "narrative": "下山去了。", "memory": "m"},
             meta, "下山采买", "explore", risk_roll=0)   # 均值：验证闭门惩罚只对枯坐生效
         assert meta["cultivate"]["secluded"] is False
-        assert delta["exp"] == 10
         assert engine.SECLUSION_HINT not in narrative
         assert s["cultivate_streak"] == 0   # 出门即断连
+        assert s["seclusion_streak"] == 0
 
-    def test_single_turn_can_not_fill_a_realm(self, engine, base_state):
-        """AI 给到上限 40 修为时，最强配置也不许一轮圆满。"""
+    def test_single_turn_can_not_fill_a_realm(self, engine, base_state, lock_days):
+        """最强配置 + 最长时间的闭关，也不许一轮圆满。"""
         s = engine.sanitize_state({**base_state, "spirit_stones": 999,
                                    "spirit_root": "天灵根·火", "cultivate_streak": 5})
+        lock_days(engine.ACTION_DAYS["cultivate"][1])   # 810 天，闭关上限
         meta = {}
         _, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 40}, "choices": [], "narrative": "n", "memory": "m"},
@@ -253,16 +285,17 @@ class TestSafeguards:
         assert delta["exp"] <= engine.exp_max_of(0) // 2
         assert meta["cultivate"]["capped"] is True
 
-    def test_cap_not_triggered_in_late_realm(self, engine, base_state):
+    def test_cap_not_triggered_in_late_realm(self, engine, base_state, lock_days):
         """后期境界需求大，正常收益不该被误伤。"""
         s = engine.sanitize_state({**base_state, "spirit_stones": 999, "realm_index": 8,
                                    "hp": 300, "hp_max": 300, "qi": 200, "qi_max": 200})
+        lock_days(engine.ACTION_DAYS["cultivate"][0])   # 270 天，闭关下限
         meta = {}
         _, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 40}, "choices": [], "narrative": "n", "memory": "m"},
             meta, "行功", "cultivate")
         assert meta["cultivate"]["capped"] is False
-        assert delta["exp"] == 72      # 40 × 1.8
+        assert delta["exp"] > 0
 
 
 # ---------------------------------------------------------------- meta 契约（前端据此渲染）
@@ -281,14 +314,18 @@ class TestCultivateMeta:
         assert c["streak_coeff"] == 1.2
         assert isinstance(c["vitality"], float)
         assert c["secluded"] is False
-        assert c["base"] == 10
+        assert isinstance(c["base"], float)      # 天数 × 日效率
+        assert isinstance(c["days"], int)        # 本轮流逝天数（时间系统的地基）
+        assert c["day_exp"] > 0
         assert isinstance(c["coeff"], float)
 
-    def test_meta_absent_when_no_exp(self, engine, base_state):
+    def test_meta_absent_when_exp_is_penalty(self, engine, base_state):
+        """AI 给的修为折损不产出任何修为明细——惩罚不吃加成，也不该有「本轮速度」。"""
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
         meta = {}
         engine._postprocess_turn(
-            s, {"delta": {}, "choices": [], "narrative": "n", "memory": "m"}, meta, "闲逛", "explore")
+            s, {"delta": {"exp": -5}, "choices": [], "narrative": "n", "memory": "m"},
+            meta, "走火入魔", "other")
         assert "cultivate" not in meta
 
 
@@ -328,22 +365,21 @@ class TestBreakthroughHint:
 
 # ---------------------------------------------------------------- 端到端：节奏真的变快了吗
 class TestPacingSimulation:
-    """用固定 10 点基准修为跑完炼气九层，验证「选择决定节奏」确实成立。
+    """跑完炼气九层，验证「选择决定节奏」确实成立。
 
-    不掷骰（突破一律成功），量的纯粹是「攒修为速度」。
-    注意：炼气九层总需求 3450，比设计文档表格里的 2270 高——
-    REALM_TABLE 的曲线才是权威，故此处按真实曲线校准断言。
+    v2 起修为按天产出，故不再喂固定基准修为——量的就是「时间换修为」的速度。
+    不掷骰（突破一律成功），才能稳定量出期望速度；随机性由 tools/sim_lifespan.py 覆盖。
+    注意：炼气九层总需求 3450（= EXP_NEED[0]），REALM_TABLE 的曲线才是权威。
     """
 
     ALWAYS = staticmethod(lambda engine, s: "cultivate")
-    SMART = staticmethod(lambda engine, s: "explore" if s["cultivate_streak"] >= engine.SECLUSION_STREAK
+    # 「张弛有度」：枯坐到阈值前出门一趟，把衰减永久重置
+    SMART = staticmethod(lambda engine, s: "explore" if s["seclusion_streak"] >= engine.SECLUSION_STREAK
                          else "cultivate")
 
     @staticmethod
-    def run(engine, pick, base_exp=10, root="三灵根·水火木", max_turns=3000):
-        """pick(engine, state) → 本轮 tag。返回跑完炼气九层所需轮数。
-
-        risk_roll=0：节奏模拟只验证「速度的期望」，不引入随机波动（波动由专门的分布测试覆盖）。"""
+    def run(engine, pick, root="三灵根·水火木", max_turns=4000):
+        """pick(engine, state) → 本轮 tag。返回 (轮数, 终局年龄)。"""
         s = engine.sanitize_state({
             "realm_index": 0, "hp": 100, "hp_max": 100, "qi": 50, "qi_max": 50,
             "exp": 0, "spirit_stones": 99999, "spirit_root": root,
@@ -353,50 +389,53 @@ class TestPacingSimulation:
         while s["realm_index"] < 9 and turns < max_turns:
             turns += 1
             engine._postprocess_turn(
-                s, {"delta": {"exp": base_exp}, "choices": [], "narrative": "n", "memory": "m"},
+                s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
                 {}, "行动", pick(engine, s), risk_roll=0)
             # 修为圆满即冲关（确定性：必定成功）
             if s["exp"] >= engine.exp_max_of(s["realm_index"]):
                 engine.apply_trial(s, {"success": True})
-        return turns
+        return turns, s["age"]
 
     @staticmethod
     def tag_picker(tag):
         return lambda engine, s: tag
 
     def test_cultivate_beats_explore_and_trade(self, engine):
-        smart = self.run(engine, self.SMART)
-        explore = self.run(engine, self.tag_picker("explore"))
-        trade = self.run(engine, self.tag_picker("trade"))
-        # 连修 + 断连的专注流应比基准快三成以上，交易流则应最慢
-        assert smart < explore * 0.7
+        smart, _ = self.run(engine, self.SMART)
+        explore, _ = self.run(engine, self.tag_picker("explore"))
+        trade, _ = self.run(engine, self.tag_picker("trade"))
+        assert smart < explore * 0.8
         assert explore < trade
 
     def test_mindless_meditation_is_not_optimal(self, engine):
         """无脑连点打坐必然撞上枯坐惩罚，反而比「修行—出门」的节奏更慢。
 
         这是本机制的关键价值：让玩家真的需要做取舍，而不是找到一键最优解。"""
-        mindless = self.run(engine, self.ALWAYS)
-        smart = self.run(engine, self.SMART)
-        assert mindless > smart * 1.5
+        mindless, _ = self.run(engine, self.ALWAYS)
+        smart, _ = self.run(engine, self.SMART)
+        assert mindless > smart
+        # 而且慢的那条路要多耗寿命——这正是寿元压力的来源
+        assert self.run(engine, self.ALWAYS)[1] > self.run(engine, self.SMART)[1]
 
     def test_focused_route_is_in_reasonable_range(self, engine):
-        """专注流的实际量级约 180 轮（真实曲线下的合理值，非文档旧表的 95 轮）。"""
-        assert 140 <= self.run(engine, self.SMART) <= 230
+        """取舍流的量级锚点：约 70 轮 / 100 岁（与 tools/sim_lifespan.py 同量级）。"""
+        turns, age = self.run(engine, self.SMART)
+        assert 50 <= turns <= 110
+        assert 80 <= age <= 140
 
     def test_no_single_button_route_beats_the_tradeoff(self, engine):
-        """任何「一键到底」的路线都不该打赢需要取舍的专注流。
+        """任何「一键到底」的路线都不该打赢需要取舍的节奏流。
 
         若某条单键路线反超，玩家会立刻收敛到它，整套节奏设计就白做了。"""
-        smart = self.run(engine, self.SMART)
+        smart, _ = self.run(engine, self.SMART)
         for tag in ("cultivate", "rest", "explore", "trade", "fight"):
-            assert self.run(engine, self.tag_picker(tag)) > smart, f"单键路线 {tag} 反超了取舍流"
+            assert self.run(engine, self.tag_picker(tag))[0] > smart, f"单键路线 {tag} 反超了取舍流"
 
-    def test_baseline_route_matches_known_total(self, engine):
-        """基准线 = 总需求 ÷ 每轮基准收益：3450 ÷ 10 = 345 轮（守曲线的锚点）。"""
+    def test_baseline_total_is_the_balance_anchor(self, engine):
+        """炼气期总需求 3450 = EXP_NEED[0]，是整套配平的分母。"""
         total = sum(row[1] for row in engine.REALM_TABLE)
         assert total == 3450
-        assert self.run(engine, self.tag_picker("explore")) == 345
+        assert engine.EXP_NEED[0] == total
 
 
 # ---------------------------------------------------------------- 杠杆 X：高风险行动波动收益
@@ -445,11 +484,15 @@ class TestDisturbance:
     """连修枯坐到阈值，强制砸一场「外界打扰」事件进来——惩罚（代码衰减）+ 叙事（打扰）双管齐下。"""
 
     def test_prompt_note_only_when_secluded(self, engine, base_state):
-        s = engine.sanitize_state({**base_state, "cultivate_streak": 6})
-        assert isinstance(engine._seclusion_prompt_note(s, "cultivate"), str)   # 修行且达阈值
-        assert engine._seclusion_prompt_note(s, "explore") is None              # 非修行不触发
-        s2 = engine.sanitize_state({**base_state, "cultivate_streak": 5})
+        s = engine.sanitize_state({**base_state, "seclusion_streak": 6})
+        assert isinstance(engine._seclusion_prompt_note(s, "cultivate"), str)   # 枯坐且达阈值
+        assert engine._seclusion_prompt_note(s, "explore") is None              # 非枯坐不触发
+        assert engine._seclusion_prompt_note(s, "rest") is None                 # 静养不算枯坐
+        s2 = engine.sanitize_state({**base_state, "seclusion_streak": 5})
         assert engine._seclusion_prompt_note(s2, "cultivate") is None           # 未达阈值
+        # 连修很高但从未枯坐（一直穿插静养）→ 不该触发打扰
+        s3 = engine.sanitize_state({**base_state, "cultivate_streak": 9, "seclusion_streak": 0})
+        assert engine._seclusion_prompt_note(s3, "cultivate") is None
 
     def test_disturbance_event_shape(self, engine):
         ev = engine._disturbance_event()
@@ -460,7 +503,7 @@ class TestDisturbance:
     def test_mock_mode_injects_disturbance(self, engine, base_state, monkeypatch):
         monkeypatch.setattr(engine, "API_KEY", "")
         monkeypatch.setattr(engine, "_OPENAI_OK", False)
-        s = engine.sanitize_state({**base_state, "cultivate_streak": 7})
+        s = engine.sanitize_state({**base_state, "cultivate_streak": 7, "seclusion_streak": 7})
         note = engine._seclusion_prompt_note(s, "cultivate")
         data, meta = engine.generate_scene(s, {"text": "继续打坐"}, "", False, note)
         assert meta.get("disturbance") is True
@@ -471,7 +514,7 @@ class TestDisturbance:
         monkeypatch.setattr(engine, "_OPENAI_OK", True)
         monkeypatch.setattr(engine, "_get_client", lambda: (_ for _ in ()).throw(
             RuntimeError("强制走兜底")))
-        s = engine.sanitize_state({**base_state, "cultivate_streak": 8})
+        s = engine.sanitize_state({**base_state, "cultivate_streak": 8, "seclusion_streak": 8})
         note = engine._seclusion_prompt_note(s, "cultivate")
         data, meta = engine.generate_scene(s, {"text": "继续打坐"}, "", False, note)
         assert meta.get("disturbance") is True     # 即便 AI 失败走兜底，标记仍在

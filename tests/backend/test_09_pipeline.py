@@ -60,20 +60,24 @@ class TestClampAiDelta:
 
 
 class TestPostprocessPipeline:
-    def test_full_turn_applies_delta_and_costs(self, engine, base_state):
+    def test_full_turn_applies_delta_and_costs(self, engine, base_state, lock_days):
         s = engine.sanitize_state({**base_state, "spirit_stones": 100, "hp": 50, "exp": 10})
         meta = {}
+        lock_days(engine.ACTION_DAYS["rest"][1])   # 静养 45 天，取上限才好断言正收益
         narrative, choices, delta, nd, npc_ev = engine._postprocess_turn(
             s, {"delta": {"hp": 10, "exp": 10}, "choices": [], "narrative": "你略作调息。",
                 "memory": "调息养气"}, meta, "打坐", "rest")
         assert s["hp"] == 60
-        # 修为 = 10 × 灵根(1.0) × 静养(1.3) × 连击(1.0) × 状态(半血 → 0.925) = 12.025 → 12
-        assert s["exp"] == 22
-        assert delta["exp"] == 12
-        assert meta["cultivate"]["coeff"] == 1.2
+        # v2：修为 = 天数 × 静养日效率(0.030) × 灵根(1.0) × 连击(1.0) × 状态(半血 → 0.92)
+        # 天数由 _postprocess_turn 掷定（15~45），故此处只校验「确实入账了正修为」
+        assert s["exp"] > 10
+        assert delta["exp"] > 0
+        assert delta["exp"] == s["exp"] - 10
         assert meta["cultivate"]["action_label"] == "静养调息"
         # 状态修正 = 0.7 + 0.3 × (半血 0.5×0.5 + 满灵 1.0×0.5) = 0.925 → 回传两位小数
         assert meta["cultivate"]["vitality"] == 0.92
+        # 天数与日效率必须回传，前端据此解释「这一轮花掉了多少寿命」
+        assert meta["cultivate"]["days"] == engine.ACTION_DAYS["rest"][1]
         # 连修一轮，连击计数已累加
         assert s["cultivate_streak"] == 1
         assert delta["hp"] == 10
@@ -85,11 +89,18 @@ class TestPostprocessPipeline:
         assert len(choices) == 3
         assert nd is False
 
-    def test_exp_gain_uses_spirit_root_coefficient(self, engine, base_state):
-        s = engine.sanitize_state({**base_state, "spirit_root": "天灵根·火"})
-        _, _, delta, _, _ = engine._postprocess_turn(
-            s, {"delta": {"exp": 20}, "choices": [], "narrative": "悟道", "memory": "m"}, {}, "随缘", "other")
-        assert delta["exp"] == 32      # 20 × 1.6（满状态、无连击、随缘→其余系数均为 1.0）
+    def test_exp_gain_uses_spirit_root_coefficient(self, engine, base_state, lock_days):
+        """灵根系数照旧生效，只是基底从「AI 给的修为」换成了「天数 × 日效率」。"""
+        gains = {}
+        for root in ("天灵根·火", "四灵根·伪灵根"):
+            s = engine.sanitize_state({**base_state, "spirit_root": root})
+            lock_days(engine.ACTION_DAYS["cultivate"][0])
+            _, _, delta, _, _ = engine._postprocess_turn(
+                s, {"delta": {"exp": 20}, "choices": [], "narrative": "悟道", "memory": "m"},
+                {}, "闭关行功", "cultivate")
+            gains[root] = delta["exp"]
+        # 天灵根 1.6 / 四灵根 0.75 → 2.13 倍差距
+        assert gains["天灵根·火"] > gains["四灵根·伪灵根"] * 2
 
     def test_exp_loss_bypasses_coefficient(self, engine, base_state):
         s = engine.sanitize_state({**base_state, "spirit_root": "天灵根·火", "exp": 50})

@@ -3,7 +3,7 @@
    点击任意处唤起全状态抽屉。回顶部时淡出，两态互斥。 */
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { game } from "../stores/game";
-import { REALMS, EXP_MAX } from "../game/constants";
+import { REALMS, EXP_MAX, ageLevel, lifespanAvg } from "../game/constants";
 
 const visible = ref(false);
 let observer: IntersectionObserver | null = null;
@@ -14,6 +14,10 @@ const root = computed(() => game.state?.spirit_root || "");
 const expMax = computed(() => EXP_MAX[game.state?.realm_index ?? 0]);
 const expFull = computed(() => (game.state?.realm_index ?? 0) < 9 && (game.state?.exp ?? 0) >= expMax.value);
 const hpLow = computed(() => (game.state?.hp ?? 100) > 0 && (game.state?.hp ?? 0) / (game.state?.hp_max || 1) < 0.3);
+/* 年岁：安全线内只作低调陪衬，越线才吃色——避免无谓的焦虑噪音 */
+const age = computed(() => game.state?.age ?? 16);
+const lifespan = computed(() => game.state?.lifespan ?? lifespanAvg(game.state?.realm_index ?? 0));
+const ageLv = computed(() => ageLevel(age.value / Math.max(lifespan.value, 1)));
 
 const minis = computed(() => {
   const s = game.state;
@@ -56,6 +60,8 @@ onBeforeUnmount(() => {
     <div class="sb-row">
       <span class="sb-realm">{{ realm }}</span>
       <span class="sb-root" :class="{ heaven: root.startsWith('天灵根') }">{{ root }}</span>
+      <span class="sb-age" :class="'age-' + ageLv"
+            :title="`年岁 ${age} / 寿元 ${lifespan}`">{{ age }}岁</span>
       <span class="sb-stones">◈ {{ game.state?.spirit_stones ?? 0 }}</span>
     </div>
     <div class="sb-row sb-bars">
