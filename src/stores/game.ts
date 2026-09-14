@@ -178,6 +178,19 @@ function applySceneEffects(d: ActResponse) {
   if (d.engine_meta?.cultivate?.fortune) floatText("【奇遇】忽有所悟", "f-item");
   // 静养续命：把「寿元 +N」摆出来，静养才不是隐形机制
   if (d.engine_meta?.life_extended) floatText(`寿元 +${d.engine_meta.life_extended} 岁`, "f-item");
+  // 探索档位：出门有多险、走了多久，必须让玩家看见（三档差异全在这里）
+  const ex = d.engine_meta?.explore;
+  if (ex && d.engine_meta?.cultivate) floatText(`探索 · ${ex.label}`, "f-time");
+  // 机缘掉落：这是「探索值得出门」的全部理由
+  const tr = d.engine_meta?.treasure;
+  if (tr) {
+    if (tr.exp) floatText(`【灵丹】修为 +${tr.exp}`, "f-item");
+    else floatText(`得【${tr.name}】`, "f-item");
+  }
+  // 护道符：挡下一次冲关折损（一次性）
+  if (d.breakthrough?.guard_talisman) floatText("护道符护体 · 修为未损", "f-item");
+  // 探索陨落：用风险换效率的代价
+  if (d.engine_meta?.explore_death) floatText("行途遇险，殒命半途", "f-neg");
   game.state = d.state;
   game.choices = d.choices;
   game.errorCard = null;

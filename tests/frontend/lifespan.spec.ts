@@ -120,8 +120,8 @@ describe("大境界与寿元推导", () => {
   });
 
   it("寿元均值取区间中点", () => {
-    expect(lifespanAvg(0)).toBe(165);    // 140~190
-    expect(lifespanAvg(9)).toBe(450);    // 390~510
+    expect(lifespanAvg(0)).toBe(133);    // 炼气 115~150
+    expect(lifespanAvg(9)).toBe(350);    // 筑基 300~400
   });
 });
 

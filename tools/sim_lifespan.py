@@ -1,18 +1,23 @@
 # -*- coding: utf-8 -*-
-"""《墨问仙途》时间/寿元系统 · 蒙特卡洛仿真校验
+"""《墨问仙途》时间 / 寿元 / 探索系统 · 蒙特卡洛仿真校验（v3 配平 · P0 + P1）
 
-对应《时间/寿元系统 最终配平方案 v2》§3 的锚点。任何参数改动请先跑这个脚本，
-确认锚点没跑飞再上线（建议接 CI 做数值回归）。
+对应《墨问仙途 下一版设计文档》的锚点：
+    · 一次闭关均值 5 年（ACTION_DAYS["cultivate"] = (1260, 2340)，日效率 0.200）
+    · 大境界修为需求 EXP_NEED = [4659, 8000, 10000, 8000]
+    · 寿元：炼气 115~150 / 筑基 300~400；静养续命封顶 = 基础寿元的 12%
+    · 探索三档 low(寻常走动) / mid(远行历练) / high(秘境探险)
+    · 机缘物件：功法残卷/上古秘籍/仙家真诀 → 闭关效率；悟道石 → 突破率；护道符 → 免折损
+
+设计意图：探险不是「用时间换寿元」，而是「用风险换效率」——
+纯闭关拿不到效率加成，探索流拿不到时间效率，两者必须取舍。
 
 用法：
     python tools/sim_lifespan.py            # 默认 2000 次/策略
     python tools/sim_lifespan.py 20000      # 文档用的精度
 
-锚点（v2 §6）：
-    闭关 5 + 探索 1  →  68 轮 / 102 岁 / 0.1% 死亡
-    纯闭关          →  84 轮 / 142 岁 / 29%  死亡
-    探索流          → 112 轮 /  19 岁 / 0%   死亡
-    静养流（续命后）→   不死
+⚠️ 仿真直接复用 server._postprocess_turn，因此不会与线上引擎漂移
+（含探索掉落、机缘效率、闭门衰减、静养续命、寿元判定全都走真代码）。
+任何参数改动，先跑这个脚本，再改 tests 里的断言。
 """
 from __future__ import annotations
 
@@ -24,78 +29,81 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server as E  # noqa: E402
 
-# 炼气期一层层爬完所需的总修为（REALM_TABLE 九层之和 = 3450 = EXP_NEED[0]）
+# 炼气九层逐层需求之和 = EXP_NEED[0]（配平的分母）
 QI_TOTAL = sum(r[1] for r in E.REALM_TABLE)
-EXP_MAX_BY_LEVEL = [r[1] for r in E.REALM_TABLE]
+
+
+def _mix(period: int, offset: int, tier: str | None):
+    """每 period 轮里，第 offset 轮出门（tier 为探索档位），其余闭关。"""
+    return lambda t: ("explore", tier) if t % period == offset else ("cultivate", None)
+
 
 STRATEGIES = {
-    "闭关5+探索1": lambda t: "explore" if t % 6 == 5 else "cultivate",
-    "闭关3+探索1": lambda t: "explore" if t % 4 == 3 else "cultivate",
-    "纯闭关":      lambda t: "cultivate",
-    "探索为主":    lambda t: "explore",
-    "静养为主":    lambda t: "rest",
-    "张弛有度(5+静养1)": lambda t: "rest" if t % 6 == 5 else "cultivate",
+    "闭关5+远行1":  _mix(6, 5, "mid"),
+    "闭关5+秘境1":  _mix(6, 5, "high"),
+    "纯闭关":       lambda t: ("cultivate", None),
+    "远行探索流":   lambda t: ("explore", "mid"),
+    "秘境探索流":   lambda t: ("explore", "high"),
+    "修行5+静养1":  lambda t: ("rest", None) if t % 6 == 5 else ("cultivate", None),
+    "静养为主":     lambda t: ("rest", None),
 }
 
 
 def fresh_state(seed_root: str = "三灵根·金木水") -> dict:
-    s = E.sanitize_state({})
-    s["spirit_root"] = seed_root
-    return s
+    return E.sanitize_state({"spirit_root": seed_root, "spirit_stones": 99999})
+
+
+def _breakthrough(s: dict) -> str:
+    """冲关：掷骰（含灵根修正、连败保底、悟道石加成）。
+    返回 'done'（踏入筑基）/ 'ok'（层内升）/ 'fail'。"""
+    rate, _ = E.breakthrough_rate(s)
+    if random.random() >= rate:
+        E.apply_trial(s, {"success": False})     # 护道符会在此免折损
+        return "fail"
+    if s["realm_index"] >= 8:
+        E._ending_payload(s, "闭关冲关")          # 炼气 → 筑基：寿元重掷在此完成
+        return "done"
+    E.apply_trial(s, {"success": True})
+    return "ok"
 
 
 def run(strategy, max_turns: int = 4000) -> dict:
-    """跑一局：从炼气一层爬到炼气九层圆满（第一章终点前）。"""
+    """跑一局：炼气一层 → 筑基初期。返回统计量。"""
     s = fresh_state()
-    age, dead, turns = E.START_AGE, False, 0
+    dead = False
+    turns = 0
     fortunes = 0
-    for t in range(max_turns):
-        tag = strategy(t)
-        exp, days, fortune = E.action_exp(tag)
-        if fortune:
-            fortunes += 1
-        coeff = E.time_exp_coeff(s, tag, 0.0)
-        gain = int(exp * coeff)
-        cap = max(1, int(E.exp_max_of(s["realm_index"]) * E.SINGLE_TURN_EXP_CAP))
-        gain = min(gain, cap)
-        s["exp"] += gain
-        # 逐层突破（成功率取 breakthrough_rate：含灵根修正与连败保底，失败保留 70%~85% 修为）
-        while s["realm_index"] < 8 and s["exp"] >= E.exp_max_of(s["realm_index"]):
-            rate, _ = E.breakthrough_rate(s)
-            if random.random() < rate:
-                s["realm_index"] += 1
-                s["exp"] = 0
-                s["fail_streak"] = 0
-            else:
-                fs = s.get("fail_streak", 0)
-                s["exp"] = int(s["exp"] * (0.70 + min(fs * 0.05, 0.15)))
-                s["fail_streak"] = fs + 1
-                break
-        E._update_cultivate_streak(s, tag)
-        s["days"] += days
-        s["age"] = E.START_AGE + s["days"] // E.DAYS_PER_YEAR
-        if tag == "rest":
-            s["rest_count"] += 1
-            if s["rest_count"] % E.REST_LIFE_BONUS_EVERY == 0:
-                bn = s["life_bonus"]
-                nn = min(bn + E.REST_LIFE_BONUS, E.REST_LIFE_BONUS_CAP)
-                g = int(nn) - int(bn)
-                s["life_bonus"] = round(nn, 1)
-                s["lifespan"] += g
-        turns = t + 1
-        if s["realm_index"] >= 8 and s["exp"] >= E.exp_max_of(8):
-            break
-        if E.check_lifespan_death(s):
+    while turns < max_turns:
+        if s.get("dead"):
             dead = True
             break
+        # 圆满即冲关（先冲关再决定本轮的修行，避免白跑一轮）
+        while s["realm_index"] < 9 and s["exp"] >= E.exp_max_of(s["realm_index"]):
+            if _breakthrough(s) == "done":
+                break
+        if s["realm_index"] >= 9:
+            break
+
+        tag, tier = strategy(turns)
+        turns += 1
+        meta: dict = {}
+        E._postprocess_turn(
+            s, {"delta": {"exp": 0}, "choices": [], "narrative": "n", "memory": ""},
+            meta, "行动", tag, risk_roll=0.0, tier=tier)
+        if meta.get("cultivate", {}).get("fortune"):
+            fortunes += 1
+    treasures = sum((s.get("treasures") or {}).values())
     return {
         "turns": turns,
         "age": s["age"],
-        "dead": dead,
+        "dead": dead or bool(s.get("dead")),
         "lifespan": s["lifespan"],
-        "ratio": s["age"] / max(s["lifespan"], 1),
+        "ratio": s["age"] / max(E.LIFESPAN_TABLE[0][1], 1),
         "fortunes": fortunes,
-        "won": (not dead) and s["realm_index"] >= 8,
+        "treasures": treasures,
+        "eff_bonus": E.treasure_eff_bonus(s.get("treasures")),
+        "realm": s["realm_index"],
+        "won": (not dead) and s["realm_index"] >= 9,
     }
 
 
@@ -103,27 +111,30 @@ def main() -> int:
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 2000
     random.seed(20260913)
     E._life_rng.seed(20260913)   # 寿元走独立随机流，也要一起播种才能复现
+    qi_avg = (E.LIFESPAN_TABLE[0][1] + E.LIFESPAN_TABLE[0][2]) // 2
     print(f"炼气期总修为需求：{QI_TOTAL}（REALM_TABLE 九层之和；EXP_NEED[0] = {E.EXP_NEED[0]}）")
-    print(f"寿元：炼气期 {E.LIFESPAN_TABLE[0][1]}~{E.LIFESPAN_TABLE[0][2]}"
-          f"（均值 {(E.LIFESPAN_TABLE[0][1] + E.LIFESPAN_TABLE[0][2]) // 2}）"
-          f"　安全线 {int(E.LIFESPAN_SAFE_RATIO * 100)}%")
+    print(f"一次闭关天数：{E.ACTION_DAYS['cultivate']}（均值 "
+          f"{sum(E.ACTION_DAYS['cultivate']) / 2 / E.DAYS_PER_YEAR:.1f} 年）"
+          f"　日效率 {E.DAY_EFF['cultivate']}")
+    print(f"寿元：炼气 {E.LIFESPAN_TABLE[0][1]}~{E.LIFESPAN_TABLE[0][2]}（均值 {qi_avg}）"
+          f"　安全线 {int(E.LIFESPAN_SAFE_RATIO * 100)}%　续命封顶 {E.REST_LIFE_BONUS_CAP:.0%}")
     print(f"每组 {n} 次\n")
-    head = f"{'策略':<18}{'轮数':>8}{'终局年龄':>10}{'死亡率':>10}{'占寿元':>10}{'奇遇':>8}"
+    head = (f"{'策略':<16}{'轮数':>7}{'终局年龄':>9}{'死亡率':>8}"
+            f"{'占寿元':>8}{'奇遇':>6}{'物件':>6}{'效率':>7}{'入筑基':>8}")
     print(head)
     print("-" * len(head))
     for name, fn in STRATEGIES.items():
         rs = [run(fn) for _ in range(n)]
-        avg_turns = sum(r["turns"] for r in rs) / n
-        alive = [r for r in rs if not r["dead"]]
-        avg_age = sum(r["age"] for r in rs) / n
+        avg = lambda k: sum(r[k] for r in rs) / n          # noqa: E731
         death = sum(1 for r in rs if r["dead"]) / n * 100
-        ratio = sum(r["ratio"] for r in rs) / n * 100
-        fort = sum(r["fortunes"] for r in rs) / n
-        print(f"{name:<18}{avg_turns:>8.0f}{avg_age:>10.0f}{death:>9.1f}%{ratio:>9.0f}%{fort:>8.1f}")
+        win = sum(1 for r in rs if r["won"]) / n * 100
+        print(f"{name:<16}{avg('turns'):>7.0f}{avg('age'):>9.0f}{death:>7.1f}%"
+              f"{avg('ratio') * 100:>7.0f}%{avg('fortunes'):>6.1f}"
+              f"{avg('treasures'):>6.1f}{avg('eff_bonus') * 100:>6.0f}%{win:>7.0f}%")
     print()
-    print("死亡风险曲线（每轮）：")
+    print("死亡风险曲线（每轮，按炼气均寿元）：")
     for r in (0.60, 0.72, 0.80, 0.85, 0.90, 1.00, 1.05):
-        print(f"  占寿元 {int(r * 100):>3}%  →  {E.death_risk(int(165 * r), 165) * 100:>5.2f}%")
+        print(f"  占寿元 {int(r * 100):>3}%  →  {E.death_risk(int(qi_avg * r), qi_avg) * 100:>5.2f}%")
     return 0
 
 

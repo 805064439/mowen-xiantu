@@ -6,6 +6,7 @@ import {
   REALMS, EXP_MAX, itemInfo, canUseItem,
   actionInfo, streakCoeff, seclusionCoeff, STREAK_CAP, SECLUSION_STREAK,
   ageLevel, AGE_HINT, lifespanAvg, REST_LIFE_BONUS, REST_LIFE_BONUS_EVERY,
+  TREASURE_INFO, treasureEffBonus, treasureBreakBonus,
 } from "../game/constants";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
@@ -37,6 +38,15 @@ const overflow = computed(() => {
 /* 江湖人物摘要：主面板前 3 个，更多进抽屉 */
 const shownNpcs = computed(() => (game.state?.npcs || []).slice(0, 3));
 const npcOverflow = computed(() => Math.max(0, (game.state?.npcs || []).length - 3));
+
+/* 机缘物件：探索所得的功法/法宝 —— 「探索值得出门」的全部理由。
+   效率加成与突破加成必须常驻可见，否则玩家感受不到出门的好处。 */
+const treasureList = computed(() =>
+  Object.entries(game.state?.treasures || {})
+    .filter(([k]) => TREASURE_INFO[k])
+    .map(([k, n]) => ({ ...TREASURE_INFO[k], qty: n })));
+const effBonusPct = computed(() => Math.round(treasureEffBonus(game.state?.treasures) * 100));
+const breakBonusPct = computed(() => Math.round(treasureBreakBonus(game.state?.treasures) * 100));
 
 /* 年岁 / 寿元：寿元是本作唯一会「越用越少」的资源，必须常驻可见；
    但只给分级提示，不暴露精确死亡率——玩家该感到压迫，而不是看着数字算概率。 */
@@ -131,6 +141,17 @@ function openDrawer() {
       </span>
       <span class="cult-risk risk-good" v-if="lastRisk === '机缘'">机缘</span>
       <span class="cult-risk risk-bad" v-else-if="lastRisk === '事与愿违'">事与愿违</span>
+    </div>
+
+    <div class="stat-treasure" v-if="treasureList.length">
+      <span class="tre-label">机 缘</span>
+      <template v-for="t in treasureList" :key="t.key">
+        <span class="tre-chip" :class="{ prot: t.prot }" :title="t.desc">
+          {{ t.name }}<i v-if="t.qty > 1">×{{ t.qty }}</i>
+        </span>
+      </template>
+      <span class="tre-bonus" v-if="effBonusPct > 0" title="功法加成：只作用于闭关与静养">闭关 +{{ effBonusPct }}%</span>
+      <span class="tre-bonus tre-break" v-if="breakBonusPct > 0" title="悟道石加成：提升冲关成功率">冲关 +{{ breakBonusPct }}%</span>
     </div>
 
     <div class="stat-foot">

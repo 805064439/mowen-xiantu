@@ -5,7 +5,7 @@ export const REALMS = [
   "炼气六层", "炼气七层", "炼气八层", "炼气九层", "筑基初期",
 ];
 
-export const EXP_MAX = [100, 130, 170, 260, 330, 400, 580, 680, 800, 9999];
+export const EXP_MAX = [135, 176, 230, 351, 446, 540, 783, 918, 1080, 9999];
 
 export const INIT_STATE = {
   realm_index: 0, hp: 100, hp_max: 100, qi: 50, qi_max: 50,
@@ -187,9 +187,9 @@ export const START_AGE = 16;
 
 /** 每轮行动消耗的天数区间（闭关动辄经年，斗法不过顷刻） */
 export const ACTION_DAYS: Record<string, [number, number]> = {
-  cultivate: [270, 810],
+  cultivate: [1260, 2340],   // 3.5~6.5 年，均值 5 年
   rest: [15, 45],
-  explore: [3, 15],
+  explore: [3, 15],          // 无档位时的兜底（正式玩法走 EXPLORE_TIERS 三档）
   trade: [3, 10],
   fight: [1, 3],
   other: [5, 20],
@@ -197,7 +197,7 @@ export const ACTION_DAYS: Record<string, [number, number]> = {
 
 /** 日效率：修为 = 天数 × 日效率 × 各项系数 */
 export const DAY_EFF: Record<string, number> = {
-  cultivate: 0.110,
+  cultivate: 0.200,
   rest: 0.030,
   explore: 0.004,
   trade: 0.002,
@@ -207,15 +207,16 @@ export const DAY_EFF: Record<string, number> = {
 
 /** 寿元区间（按大境界） */
 export const LIFESPAN_TABLE: [string, number, number][] = [
-  ["炼气期", 140, 190],
-  ["筑基期", 390, 510],
-  ["金丹期", 1160, 1500],
-  ["元婴期", 3400, 4400],
+  ["炼气期", 115, 150],
+  ["筑基期", 300, 400],
+  ["金丹期", 1500, 1800],
+  ["元婴期", 2600, 3400],
 ];
 export const LIFESPAN_SAFE_RATIO = 0.72;  // 占寿元 72% 以下绝无寿终之虞
 export const REST_LIFE_BONUS_EVERY = 3;   // 每 3 轮静养
-export const REST_LIFE_BONUS = 3.5;       // 寿元上限 +3.5 岁（封顶 60）
-export const REST_LIFE_BONUS_CAP = 60;
+export const REST_LIFE_BONUS = 3.5;       // 寿元上限 +3.5 岁
+// 续命封顶 = 当前境界「基础寿元」的 12%（比例，随境界缩放：筑基 +42、金丹 +198）
+export const REST_LIFE_BONUS_CAP = 0.12;
 
 /** 大境界序号：每 9 层一境 */
 export function stageOf(realmIndex: number): number {
@@ -251,4 +252,96 @@ export function daysText(days: number): string {
   }
   if (days >= 30) return `过了约 ${Math.round(days / 30)} 个月`;
   return `过了 ${days} 天`;
+}
+
+/* -----------------------------------------------------------------------
+   探索三档 + 机缘物件（v3 · P1）：与后端 server.py 的 EXPLORE_TIERS / TREASURE 同源
+   （数值改动须两边一起改，tests/frontend/treasure.spec.ts 盯着）。
+
+   探险不是「用时间换寿元」，而是「用风险换效率」——掉落功法与法宝，
+   提供闭关效率与突破成功率加成，这是纯闭关永远拿不到的。
+   ----------------------------------------------------------------------- */
+export interface ExploreTierInfo {
+  key: "low" | "mid" | "high";
+  label: string;
+  days: [number, number];
+  death: number;     // 单次探索死亡率
+  drop: number;      // 宝物掉率
+  fortune: number;   // 奇遇概率
+  rare: boolean;     // 是否可出稀有物件
+  note: string;
+}
+
+export const EXPLORE_TIERS: Record<string, ExploreTierInfo> = {
+  low: {
+    key: "low", label: "寻常走动", days: [5, 20], death: 0, drop: 0, fortune: 0.05, rare: false,
+    note: "只走熟悉的近处：结交人物、打探消息，几无凶险，也无厚利。",
+  },
+  mid: {
+    key: "mid", label: "远行历练", days: [25, 60], death: 0.0008, drop: 0.75, fortune: 0.22, rare: false,
+    note: "寻常机缘、采药、跑商：耗日稍久，风险极小，掉落可观。",
+  },
+  high: {
+    key: "high", label: "秘境探险", days: [80, 160], death: 0.012, drop: 0.9, fortune: 0.3, rare: true,
+    note: "闯秘境、争宝物：耗时最久、性命有虞，却是唯一能得稀有真诀的路。",
+  },
+};
+
+/** 风险档 → 探索档位（与后端 explore_tier_of 同义：低/中/高即档位） */
+export function exploreTierOfRisk(risk?: string): ExploreTierInfo {
+  return EXPLORE_TIERS[risk ?? ""] ?? EXPLORE_TIERS.mid;
+}
+
+export interface TreasureInfo {
+  key: string;
+  name: string;
+  eff: number;    // 闭关效率加成
+  bp: number;     // 突破成功率加成
+  prot: boolean;  // 护道符：冲关失败不折损修为（一次性）
+  exp?: [number, number];  // 灵丹：即时修为
+  cap: number;    // 叠加上限
+  desc: string;
+}
+
+export const TREASURE_INFO: Record<string, TreasureInfo> = {
+  residual_scroll: { key: "residual_scroll", name: "功法残卷", eff: 0.03, bp: 0, prot: false, cap: 6,
+    desc: "残缺的行功篇章，参悟后闭关效率 +3%。" },
+  rare_manual: { key: "rare_manual", name: "上古秘籍", eff: 0.06, bp: 0, prot: false, cap: 4,
+    desc: "上古修士的遗册，闭关效率 +6%。" },
+  elixir: { key: "elixir", name: "灵丹", eff: 0, bp: 0, prot: false, exp: [150, 600], cap: 0,
+    desc: "服下即长修为 150~600，唯一直接给修为的机缘。" },
+  enlight_stone: { key: "enlight_stone", name: "悟道石", eff: 0, bp: 0.03, prot: false, cap: 4,
+    desc: "参悟可提升冲关成功率 +3%——筑基期是死亡主区，这等于缩短暴露时间。" },
+  guard_talisman: { key: "guard_talisman", name: "护道符", eff: 0, bp: 0, prot: true, cap: 1,
+    desc: "冲关失败一次不折损修为（用掉即失）。切断「失败→折损→拖长→死亡」的致死链条。" },
+  immortal_art: { key: "immortal_art", name: "仙家真诀", eff: 0.12, bp: 0, prot: false, cap: 2,
+    desc: "闭关效率 +12%，仅秘境（高风险）可出，最稀有。" },
+};
+
+/** 已得物件的闭关效率加成合计（与后端 treasure_eff_bonus 同式，仅展示用） */
+export function treasureEffBonus(treasures?: Record<string, number>): number {
+  let sum = 0;
+  for (const [k, n] of Object.entries(treasures || {})) {
+    const info = TREASURE_INFO[k];
+    if (info) sum += info.eff * n;
+  }
+  return sum;
+}
+
+/** 已得物件的突破成功率加成合计（与后端 treasure_break_bonus 同式） */
+export function treasureBreakBonus(treasures?: Record<string, number>): number {
+  let sum = 0;
+  for (const [k, n] of Object.entries(treasures || {})) {
+    const info = TREASURE_INFO[k];
+    if (info) sum += info.bp * n;
+  }
+  return sum;
+}
+
+/** 已得物件摘要文案：「功法残卷×2 · 护道符」 */
+export function treasureSummary(treasures?: Record<string, number>): string {
+  return Object.entries(treasures || {})
+    .filter(([k]) => TREASURE_INFO[k])
+    .map(([k, n]) => (n > 1 ? `${TREASURE_INFO[k].name}×${n}` : TREASURE_INFO[k].name))
+    .join(" · ");
 }

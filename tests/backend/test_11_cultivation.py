@@ -10,7 +10,12 @@ v2 起修为改「按天产出」（见《时间/寿元系统 最终配平方案
 """
 from __future__ import annotations
 
+import random
+
 import pytest
+
+# pacing 仿真用的固定种子：每条路线都从同一起点播种，比较才公平（见 TestPacingSimulation.run）
+PACE_SEED = 20260912
 
 
 # ---------------------------------------------------------------- 杠杆 1：行动类型系数
@@ -130,8 +135,12 @@ class TestCultivateStreak:
         assert engine._cultivate_streak_coeff({"cultivate_streak": streak}) == pytest.approx(expected)
 
     def test_streak_bonus_grows_the_day_yield(self, engine, base_state, lock_days):
-        """连修第 3 轮才吃到加成——第一轮的连击是 0，不能自肥。"""
-        s = engine.sanitize_state({**base_state, "spirit_stones": 999})
+        """连修第 3 轮才吃到加成——第一轮的连击是 0，不能自肥。
+
+        v3 起一次闭关 5 年（1260~2340 天 × 0.200 ≈ 252~468），在炼气一层会顶到
+        单轮上限（半个境界）。故本用例抬到炼气九层（上限 540）量连击差异，
+        否则三档全被 cap 抹平、什么都看不出来。"""
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "realm_index": 8})
         days = engine.ACTION_DAYS["cultivate"][0]
         seen = []
         for _ in range(4):
@@ -170,10 +179,13 @@ class TestVitalityCoefficient:
         assert engine._vitality_coeff(s) == pytest.approx(expected, abs=0.01)
 
     def test_wounded_cultivation_is_slower(self, engine, base_state, lock_days):
-        """同样的打坐，重伤时收获更少——回血因此有了修行意义。"""
+        """同样的打坐，重伤时收获更少——回血因此有了修行意义。
+
+        同样抬到炼气九层，避免单轮上限把状态差异一并抹平。"""
         results = {}
         for hp in (100, 40):
-            s = engine.sanitize_state({**base_state, "spirit_stones": 999, "hp": hp, "qi": 50})
+            s = engine.sanitize_state({**base_state, "spirit_stones": 999, "realm_index": 8,
+                                       "hp": hp, "qi": 50})
             lock_days(engine.ACTION_DAYS["cultivate"][0])   # 天数一致，只比状态系数
             _, _, delta, _, _ = engine._postprocess_turn(
                 s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
@@ -367,9 +379,12 @@ class TestBreakthroughHint:
 class TestPacingSimulation:
     """跑完炼气九层，验证「选择决定节奏」确实成立。
 
-    v2 起修为按天产出，故不再喂固定基准修为——量的就是「时间换修为」的速度。
+    v3 起修为按天产出（一次闭关 5 年），故不再喂固定基准修为——量的就是「时间换修为」的速度。
     不掷骰（突破一律成功），才能稳定量出期望速度；随机性由 tools/sim_lifespan.py 覆盖。
-    注意：炼气九层总需求 3450（= EXP_NEED[0]），REALM_TABLE 的曲线才是权威。
+    注意：炼气九层总需求 4659（= EXP_NEED[0]），REALM_TABLE 的曲线才是权威。
+
+    ⚠️ 关键判据是【年岁】而非【轮数】：v3 之下一次闭关就是 5 年，
+    而「出门」几乎不耗时——所以「烧寿元」才是无脑路线的真正代价。
     """
 
     ALWAYS = staticmethod(lambda engine, s: "cultivate")
@@ -379,14 +394,19 @@ class TestPacingSimulation:
 
     @staticmethod
     def run(engine, pick, root="三灵根·水火木", max_turns=4000):
-        """pick(engine, state) → 本轮 tag。返回 (轮数, 终局年龄)。"""
+        """pick(engine, state) → 本轮 tag。返回 (轮数, 终局年龄)。
+
+        每条路线都从同一起点播种（同样的天数/奇遇/掉落序列），
+        这样「谁更快、谁更老」才是公平比较，也才可复现。"""
+        random.seed(PACE_SEED)
+        engine._life_rng.seed(PACE_SEED)
         s = engine.sanitize_state({
             "realm_index": 0, "hp": 100, "hp_max": 100, "qi": 50, "qi_max": 50,
             "exp": 0, "spirit_stones": 99999, "spirit_root": root,
             "items": [], "memory": [], "recent": [], "turn": 0,
         })
         turns = 0
-        while s["realm_index"] < 9 and turns < max_turns:
+        while s["realm_index"] < 9 and turns < max_turns and not s["dead"]:
             turns += 1
             engine._postprocess_turn(
                 s, {"delta": {"exp": 10}, "choices": [], "narrative": "n", "memory": "m"},
@@ -407,34 +427,39 @@ class TestPacingSimulation:
         assert smart < explore * 0.8
         assert explore < trade
 
-    def test_mindless_meditation_is_not_optimal(self, engine):
-        """无脑连点打坐必然撞上枯坐惩罚，反而比「修行—出门」的节奏更慢。
+    def test_mindless_meditation_burns_more_lifespan(self, engine):
+        """无脑连点打坐必然撞上枯坐惩罚——代价不是轮数，而是【寿元】。
 
-        这是本机制的关键价值：让玩家真的需要做取舍，而不是找到一键最优解。"""
-        mindless, _ = self.run(engine, self.ALWAYS)
-        smart, _ = self.run(engine, self.SMART)
-        assert mindless > smart
-        # 而且慢的那条路要多耗寿命——这正是寿元压力的来源
-        assert self.run(engine, self.ALWAYS)[1] > self.run(engine, self.SMART)[1]
+        v3 之年：一次闭关 5 年，枯坐衰减只让「单位时间的效率」打折，
+        真正致命的是它把每一轮都换成了 5 年岁月。所以判据看年岁。"""
+        _, mindless_age = self.run(engine, self.ALWAYS)
+        _, smart_age = self.run(engine, self.SMART)
+        assert mindless_age > smart_age
 
     def test_focused_route_is_in_reasonable_range(self, engine):
-        """取舍流的量级锚点：约 70 轮 / 100 岁（与 tools/sim_lifespan.py 同量级）。"""
+        """取舍流的量级锚点：约 26 轮 / 128 岁（与 tools/sim_lifespan.py 同量级）。"""
         turns, age = self.run(engine, self.SMART)
-        assert 50 <= turns <= 110
-        assert 80 <= age <= 140
+        assert 18 <= turns <= 45
+        assert 95 <= age <= 150
 
-    def test_no_single_button_route_beats_the_tradeoff(self, engine):
-        """任何「一键到底」的路线都不该打赢需要取舍的节奏流。
+    def test_single_button_routes_are_all_punished(self, engine):
+        """一键到底的路线要么烧寿元（闭关），要么轮数爆炸（静养/坊市），都不划算。
 
-        若某条单键路线反超，玩家会立刻收敛到它，整套节奏设计就白做了。"""
+        ⚠️ 探险（explore）不在本清单内：v3 的 P1 设计里「中度探险」本就是全局最优路线
+        （用风险换效率，见 tools/sim_lifespan.py），此处只钉死「纯耗时间的单键流」。
+        """
         smart, _ = self.run(engine, self.SMART)
-        for tag in ("cultivate", "rest", "explore", "trade", "fight"):
-            assert self.run(engine, self.tag_picker(tag))[0] > smart, f"单键路线 {tag} 反超了取舍流"
+        # 闭关：轮数或许不多，但年岁压不住
+        assert self.run(engine, self.tag_picker("cultivate"))[1] > self.run(engine, self.SMART)[1]
+        # 静养 / 坊市 / 斗法：不直接产修为 → 轮数远多于取舍流
+        for tag, factor in (("rest", 3), ("trade", 10), ("fight", 5)):
+            turns, _ = self.run(engine, self.tag_picker(tag))
+            assert turns > smart * factor, f"单键路线 {tag} 的轮数反超了取舍流"
 
     def test_baseline_total_is_the_balance_anchor(self, engine):
-        """炼气期总需求 3450 = EXP_NEED[0]，是整套配平的分母。"""
+        """炼气期总需求 4659 = EXP_NEED[0]，是整套配平的分母。"""
         total = sum(row[1] for row in engine.REALM_TABLE)
-        assert total == 3450
+        assert total == 4659
         assert engine.EXP_NEED[0] == total
 
 

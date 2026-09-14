@@ -1,18 +1,24 @@
 # -*- coding: utf-8 -*-
 """时间与寿元系统（v2 配平方案）：天数推进 / 按天产出 / 死亡风险 / 静养续命 / 寿终判定。
 
-数值依据《墨问仙途 — 时间/寿元系统 最终配平方案 v2》，
-期望量级由 tools/sim_lifespan.py 的蒙特卡洛仿真校准：
-    张弛有度（闭关 5 + 出门 1）  ≈  70 轮 / 100 岁 / 0%   死亡
-    纯闭关                      ≈  82 轮 / 139 岁 / 23%  死亡
-    探索为主                    ≈ 160 轮 /  19 岁 / 0%   死亡
-    静养为主（续命后）          ≈ 460 轮 /  54 岁 / 0%   死亡
+数值依据《墨问仙途 下一版设计文档》（v3 配平）：
+    一次闭关均值 5 年（ACTION_DAYS["cultivate"] = (1260, 2340)）
+    DAY_EFF["cultivate"] = 0.200；EXP_NEED = [4659, 8000, 10000, 8000]
+    寿元：炼气 115~150 / 筑基 300~400 / 金丹 1500~1800
+    静养续命封顶 = 基础寿元的 12%（比例，随境界缩放）
+
+期望量级由 tools/sim_lifespan.py 的蒙特卡洛仿真校准。
 
 任何参数改动，先跑 `python tools/sim_lifespan.py`，再改这里的断言。
 """
 from __future__ import annotations
 
+import random
+
 import pytest
+
+# pacing 仿真用的固定种子：每条路线都从同一起点播种，比较才公平
+PACE_SEED = 20260912
 
 
 # ---------------------------------------------------------------- 常量表
@@ -20,12 +26,12 @@ class TestTables:
     def test_time_table_values(self, engine):
         assert engine.DAYS_PER_YEAR == 360
         assert engine.START_AGE == 16
-        assert engine.ACTION_DAYS["cultivate"] == (270, 810)
+        assert engine.ACTION_DAYS["cultivate"] == (1260, 2340)   # v3：一次闭关均值 5 年
         assert engine.ACTION_DAYS["fight"] == (1, 3)
 
     def test_day_eff_matches_the_design(self, engine):
         """日效率即行动取舍本身：闭关最高、坊市最低，差两个数量级。"""
-        assert engine.DAY_EFF["cultivate"] == 0.110
+        assert engine.DAY_EFF["cultivate"] == 0.200              # v3：0.110 → 0.200
         assert engine.DAY_EFF["cultivate"] > engine.DAY_EFF["rest"]
         assert engine.DAY_EFF["rest"] > engine.DAY_EFF["explore"]
         assert engine.DAY_EFF["explore"] > engine.DAY_EFF["trade"]
@@ -55,6 +61,15 @@ class TestTables:
 class TestActionExp:
     def test_days_within_table(self, engine):
         for tag, (lo, hi) in engine.ACTION_DAYS.items():
+            if tag == "explore":
+                # 探索正式玩法走三档（EXPLORE_TIERS），低/中/高各有一组天数区间
+                for tkey, tspec in engine.EXPLORE_TIERS.items():
+                    tlo, thi = tspec["days"]
+                    for _ in range(60):
+                        exp, days, _ = engine.action_exp("explore", tkey)
+                        assert tlo <= days <= thi
+                        assert exp >= days * engine.DAY_EFF["explore"]
+                continue
             for _ in range(60):
                 exp, days, _ = engine.action_exp(tag)
                 assert lo <= days <= hi
@@ -183,9 +198,15 @@ class TestDeathRisk:
         assert level == "dread"
 
     def test_safe_line_is_reachable_in_qi_stage(self, engine):
-        """炼气期不该被寿元卡死：跑到安全线前的余量必须够爬完九层。"""
-        lo = engine.LIFESPAN_TABLE[0][1]
-        assert lo * engine.LIFESPAN_SAFE_RATIO - engine.START_AGE > 80
+        """炼气期不该被寿元卡死：跑到安全线前的余量必须够爬完九层。
+
+        v3 起炼气寿元收紧到 115~150（压迫感来源），安全窗口随之变小但仍够用：
+        最短寿元 115 → 安全线 82.8 岁，从 16 岁起仍有 66 年可修。
+        """
+        lo, hi = engine.LIFESPAN_TABLE[0][1], engine.LIFESPAN_TABLE[0][2]
+        assert lo * engine.LIFESPAN_SAFE_RATIO - engine.START_AGE > 60
+        avg = (lo + hi) / 2
+        assert avg * engine.LIFESPAN_SAFE_RATIO - engine.START_AGE > 70
 
 
 # ---------------------------------------------------------------- 静养续命
@@ -207,12 +228,13 @@ class TestRestLifeBonus:
         assert s["life_bonus"] == pytest.approx(3.5)
         assert s["lifespan"] == 168        # 只在跨过整岁时 +3
 
-    def test_bonus_is_capped(self, engine, base_state, lock_days):
-        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "lifespan": 165,
-                                   "life_bonus": 59.5})
-        self._rest(engine, s, lock_days, 3)
-        assert s["life_bonus"] == engine.REST_LIFE_BONUS_CAP
-        assert s["lifespan"] == 165 + 1    # 59.5 → 60，只补最后 1 岁
+    def test_bonus_is_capped_at_ratio_of_lifespan(self, engine, base_state, lock_days):
+        """v3：续命封顶 = 基础寿元的 12%（不再写死 +60，改比例才随境界缩放）。"""
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "lifespan": 165})
+        self._rest(engine, s, lock_days, 300)   # 静养足够多轮，必然触顶
+        cap = 165 * engine.REST_LIFE_BONUS_CAP  # 19.8
+        assert s["life_bonus"] == pytest.approx(cap, abs=0.2)
+        assert s["lifespan"] == 165 + int(cap)  # 只加整数岁
 
     def test_rest_is_not_seclusion(self, engine, base_state, lock_days):
         """静养不算枯坐：连着静养也不吃闭门衰减。"""
@@ -290,19 +312,27 @@ class TestBreakthroughLifespan:
 
     def test_life_bonus_carries_over_the_realm_jump(self, engine):
         """静养攒下的续命不能因为突破被抹掉。"""
-        s = engine.sanitize_state({"realm_index": 8, "lifespan": 165, "life_bonus": 20,
+        s = engine.sanitize_state({"realm_index": 8, "lifespan": 165, "life_bonus": 15,
                                    "hp": 300, "hp_max": 300, "qi": 200, "qi_max": 200})
+        keep = int(s["life_bonus"])
         engine.apply_trial(s, {"success": True})
         lo = engine.LIFESPAN_TABLE[1][1]
-        assert s["lifespan"] >= lo + 20
+        assert keep > 0
+        assert s["lifespan"] >= lo + keep
 
 
 # ---------------------------------------------------------------- 端到端：量级锚点
 class TestPacingAnchors:
     """与 tools/sim_lifespan.py 同源的量级校验（跑得动、且不至于跑飞）。"""
 
+    BALANCED = staticmethod(lambda e, st: "explore"
+                            if st["seclusion_streak"] >= e.SECLUSION_STREAK else "cultivate")
+    MINDLESS = staticmethod(lambda e, st: "cultivate")
+
     @staticmethod
     def run(engine, pick, max_turns=4000):
+        random.seed(PACE_SEED)
+        engine._life_rng.seed(PACE_SEED)
         s = engine.sanitize_state({
             "realm_index": 0, "hp": 100, "hp_max": 100, "qi": 50, "qi_max": 50,
             "exp": 0, "spirit_stones": 99999, "spirit_root": "三灵根·水火木",
@@ -318,20 +348,22 @@ class TestPacingAnchors:
                 engine.apply_trial(s, {"success": True})
         return turns, s
 
-    def test_balanced_route_is_fast_and_safe(self, engine):
-        """张弛有度：出门打断枯坐 → 快且几乎不死。"""
-        turns, s = self.run(engine, lambda e, st: "explore"
-                            if st["seclusion_streak"] >= e.SECLUSION_STREAK else "cultivate")
-        assert 40 <= turns <= 110
-        assert s["age"] < 165 * 0.85
-        assert s["dead"] is False
+    def test_balanced_route_reaches_foundation_alive(self, engine):
+        """张弛有度：在炼气寿元内跑完九层、活着踏入筑基（v3 的压迫感就压在这儿）。
 
-    def test_pure_seclusion_is_punished(self, engine):
-        """纯闭关：撞上衰减 → 轮数更多、年岁更大。"""
-        balanced, sb = self.run(engine, lambda e, st: "explore"
-                                if st["seclusion_streak"] >= e.SECLUSION_STREAK else "cultivate")
-        mindless, sm = self.run(engine, lambda e, st: "cultivate")
-        assert mindless >= balanced
+        v3 一次闭关 5 年，二十来轮就到 128 岁上下——离炼气均寿 132 只差一线，
+        所以判据是「没撞上限、也没死」而不是「很年轻」。"""
+        turns, s = self.run(engine, self.BALANCED)
+        lo, hi = engine.LIFESPAN_TABLE[0][1], engine.LIFESPAN_TABLE[0][2]
+        assert 18 <= turns <= 45
+        assert engine.START_AGE < s["age"] < hi
+        assert s["dead"] is False
+        assert s["realm_index"] == 9
+
+    def test_pure_seclusion_costs_more_lifespan(self, engine):
+        """纯闭关：把每一轮都换成 5 年枯坐 → 终局年岁更大。这才是寿元压力的来源。"""
+        _, sb = self.run(engine, self.BALANCED)
+        _, sm = self.run(engine, self.MINDLESS)
         assert sm["age"] > sb["age"]
 
     def test_explore_route_costs_almost_no_lifespan(self, engine):

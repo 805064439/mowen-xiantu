@@ -136,6 +136,24 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
 .npc-more{font-size:11px; color:var(--muted); background:none; border:none; padding:0 2px; cursor:pointer; font-family:inherit; letter-spacing:1px;}
 .npc-more:hover{color:var(--ink);}
 
+/* ---------- 机缘物件（探索所得功法/法宝）---------- */
+.stat-treasure{
+  display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+  margin-top:8px; padding-top:8px; border-top:1px dashed var(--line);
+}
+.tre-label{font-size:10.5px; color:var(--muted); letter-spacing:4px; flex:none;}
+.tre-chip{
+  display:inline-flex; align-items:center; gap:3px;
+  font-size:11.5px; letter-spacing:.5px;
+  color:var(--ink); background:rgba(150,110,40,.10);
+  border:1px solid rgba(150,110,40,.42); border-radius:99px;
+  padding:1px 9px;
+}
+.tre-chip i{font-style:normal; font-size:10px; color:var(--muted);}
+.tre-chip.prot{color:#8a6030; background:rgba(180,120,30,.16); border-color:rgba(180,120,30,.6);}
+.tre-bonus{font-size:11px; letter-spacing:1px; color:var(--jade);}
+.tre-bonus.tre-break{color:#8a6030;}
+
 /* ---------- 剧情区 ---------- */
 #story-card{
   background:var(--paper2); border:1px solid var(--line); border-radius:10px;

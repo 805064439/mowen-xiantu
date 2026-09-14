@@ -208,7 +208,8 @@ class TestConsumePendingEvent:
         base_state["pending_events"] = [{"type": "teach", "npc": "青云子", "at": 0}]
         base_state["npcs"] = [{"name": "青云子", "title": "道长", "bond": 90, "met_turn": 0, "fired": {}}]
         engine.consume_pending_event(base_state)
-        assert base_state["exp"] == engine.exp_max_of(0) == 100
+        assert base_state["exp"] == engine.exp_max_of(0)
+        assert base_state["exp"] == engine.REALM_TABLE[0][1]   # 顶到炼气一层的圆满线
 
     def test_vendetta_starts_fight(self, engine, base_state):
         base_state["pending_events"] = [{"type": "vendetta", "npc": "仇天道", "at": 0}]

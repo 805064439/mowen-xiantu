@@ -90,10 +90,13 @@ class TestPostprocessPipeline:
         assert nd is False
 
     def test_exp_gain_uses_spirit_root_coefficient(self, engine, base_state, lock_days):
-        """灵根系数照旧生效，只是基底从「AI 给的修为」换成了「天数 × 日效率」。"""
+        """灵根系数照旧生效，只是基底从「AI 给的修为」换成了「天数 × 日效率」。
+
+        抬到炼气九层取样：v3 的一次闭关产出（252~468）会顶到低层单轮上限，
+        把灵根差异一并抹平，只有高层才量得准。"""
         gains = {}
         for root in ("天灵根·火", "四灵根·伪灵根"):
-            s = engine.sanitize_state({**base_state, "spirit_root": root})
+            s = engine.sanitize_state({**base_state, "spirit_root": root, "realm_index": 8})
             lock_days(engine.ACTION_DAYS["cultivate"][0])
             _, _, delta, _, _ = engine._postprocess_turn(
                 s, {"delta": {"exp": 20}, "choices": [], "narrative": "悟道", "memory": "m"},

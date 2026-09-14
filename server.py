@@ -62,16 +62,18 @@ if API_KEY and not _OPENAI_OK:
 # ---------------------------------------------------------------- 境界表
 # (境界名, 升层所需修为, 冲关成功率)  —— 第 9 项的 rate 是「九层冲击筑基」的概率
 # 阶梯式壁障：三层→四层、六层→七层为瓶颈，九层冲筑基为大壁障
+# v3 配平：整列 ×1.35（合计 3450 → 4659），使「入筑基」落在 ~88 岁。
+# 成功率不变——壁障的陡峭度属于手感，与需求曲线解耦。
 REALM_TABLE = [
-    ("炼气一层", 100, 0.95),    # 新手起步
-    ("炼气二层", 130, 0.90),    # +30%
-    ("炼气三层", 170, 0.85),    # +31%
-    ("炼气四层", 260, 0.70),    # ← 第一壁障：修为 +53%，成功率骤降
-    ("炼气五层", 330, 0.65),    # +27%
-    ("炼气六层", 400, 0.60),    # +21%
-    ("炼气七层", 580, 0.45),    # ← 第二壁障：修为 +45%，成功率骤降
-    ("炼气八层", 680, 0.40),    # +17%
-    ("炼气九层", 800, 0.25),    # +18%，大壁障前夜
+    ("炼气一层", 135, 0.95),    # 新手起步
+    ("炼气二层", 176, 0.90),    # +30%
+    ("炼气三层", 230, 0.85),    # +31%
+    ("炼气四层", 351, 0.70),    # ← 第一壁障：修为 +53%，成功率骤降
+    ("炼气五层", 446, 0.65),    # +27%
+    ("炼气六层", 540, 0.60),    # +21%
+    ("炼气七层", 783, 0.45),    # ← 第二壁障：修为 +45%，成功率骤降
+    ("炼气八层", 918, 0.40),    # +17%
+    ("炼气九层", 1080, 0.25),   # +18%，大壁障前夜
 ]
 FOUNDATION = "筑基初期"
 MAX_REALM_INDEX = 9  # 0~8 炼气，9 筑基（第一章终点）
@@ -182,12 +184,14 @@ def spirit_root_info(name: Any) -> tuple[float, float]:
 
 def breakthrough_rate(state: dict) -> tuple[float, float]:
     """返回 (真实成功率, 保底加成)。
-    掷骰（run_trial）与选项 hint 展示（normalize_choices）共用此式——玩家看见的概率必须就是掷的那一枚骰。"""
+    掷骰（run_trial）与选项 hint 展示（normalize_choices）共用此式——玩家看见的概率必须就是掷的那一枚骰。
+    突破成功率加成（悟道石 +3%/颗）也在此汇入——纯闭关玩家永远拿不到它。"""
     level = state["realm_index"]
     _, root_mod = spirit_root_info(state.get("spirit_root"))
     # 保底：连续突破失利，每败一次 +8% 成功率，封顶 +24%
     pity = min(_to_int(state.get("fail_streak"), 0) * 0.08, 0.24)
-    return clamp(REALM_TABLE[level][2] + root_mod + pity, 0.05, 0.98), pity
+    break_bonus = treasure_break_bonus(state.get("treasures"))
+    return clamp(REALM_TABLE[level][2] + root_mod + pity + break_bonus, 0.05, 0.98), pity
 
 
 def grant_exp(state: dict, amount: int, source: str = "ai") -> int:
@@ -392,7 +396,12 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
     # 只有「真·枯坐」才衰减：静养吃连击但不算闭门（SECLUSION_TAGS 与 CULTIVATE_TAGS 已分离）
     seclusion_coeff = _seclusion_coeff(state, action_tag)
     risk_coeff = _risk_coeff(action_tag, risk_roll)
-    total = root_coeff * action_coeff * streak_coeff * vitality_coeff * seclusion_coeff * risk_coeff
+    # 机缘物件的闭关效率加成：只作用于修行（cultivate/rest），绝不作用于探索——
+    # 否则探险流会「越探索越强、越强越探索」自我叠乘，滚雪球失控。
+    eff_bonus = treasure_eff_bonus(state.get("treasures")) if action_tag in TREASURE_EFF_TAGS else 0.0
+    eff_coeff = 1.0 + eff_bonus
+    total = (root_coeff * action_coeff * streak_coeff * vitality_coeff
+             * seclusion_coeff * risk_coeff * eff_coeff)
 
     if risk_coeff > 1.001:
         risk_label = "机缘"
@@ -414,6 +423,8 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
         "risk_label": risk_label,
         "secluded": seclusion_coeff < 1.0,
         "capped": False,
+        "eff": round(eff_coeff, 3),          # 机缘效率乘数（1.0 = 无加成）
+        "eff_bonus": round(eff_bonus, 3),
     }
     return total, detail
 
@@ -439,9 +450,9 @@ START_AGE = 16
 
 # 每轮行动消耗的天数区间（1 年 = 360 天）
 ACTION_DAYS = {
-    "cultivate": (270, 810),   # 闭关：9 月 ~ 2 年 3 月，岁月如梭
+    "cultivate": (1260, 2340),  # 闭关：3.5 ~ 6.5 年，均值 5 年。一次点下去，五年就过去了
     "rest":      (15, 45),     # 静养：半月 ~ 一月半
-    "explore":   (3, 15),      # 探索：数日
+    "explore":   (3, 15),      # 探索：无档位时的兜底（正式玩法走 EXPLORE_TIERS 三档）
     "trade":     (3, 10),      # 交易：数日
     "fight":     (1, 3),       # 斗法：顷刻
     "other":     (5, 20),      # 随缘：十数日
@@ -450,9 +461,9 @@ ACTION_DAYS = {
 # 日效率：修为 = 天数 × 日效率 × 各项系数。行动差异已由此表表达，
 # 故按天产出路径不再叠加 ACTION_CULTIVATE_COEFF（否则重复计入）。
 DAY_EFF = {
-    "cultivate": 0.110,   # 29.7 ~ 89.1：最高效，但耗时最长（0.090 经实测过慢，见 sim_lifespan.py）
+    "cultivate": 0.200,   # 252 ~ 468：最高效，但耗时最长（v3：0.110 → 0.200，配合 5 年跨度）
     "rest":      0.030,   # 0.5 ~ 1.4
-    "explore":   0.004,   # 0.01 ~ 0.06：靠奇遇
+    "explore":   0.004,   # 0.01 ~ 0.06：靠奇遇与宝物
     "trade":     0.002,   # 0.006 ~ 0.02
     "fight":     0.002,   # 0.002 ~ 0.006
     "other":     0.005,   # 0.025 ~ 0.1
@@ -469,27 +480,146 @@ FORTUNE_EXP = {"explore": (60, 240), "fight": (30, 120), "trade": (10, 60),
 AI_EXP_WEIGHT = 0.0
 
 # 大境界：修为总需求与冲关率（分境界，取代单值常量）
-# 注：EXP_NEED[0] = 3450 恰为 REALM_TABLE 炼气九层之和，与现有逐层曲线自洽。
-EXP_NEED = [3450, 8800, 22600, 58000]
+# 注：EXP_NEED[0] = 4659 恰为 REALM_TABLE 炼气九层之和，与逐层曲线自洽。
+# [1]/[2]/[3] 为「方案 A 压迫优先」定稿：筑基段 8000 使入金丹 ≈242 岁、存活 ≈62.6%。
+# ⚠️ [2]/[3]（金丹/元婴段）是尚未标定的占位值，本轮不启用（P2 再重算）。
+EXP_NEED = [4659, 8000, 10000, 8000]
 BREAK_RATE = [0.35, 0.28, 0.22, 0.18]
 
 # 寿元表：(境界名, 下限, 上限)
+# v3 定稿：炼气收紧到 115~150（压迫感来源），筑基 300~400、金丹 1500~1800。
 LIFESPAN_TABLE = [
-    ("炼气期", 140, 190),     # 均值 165
-    ("筑基期", 390, 510),     # 均值 450
-    ("金丹期", 1160, 1500),   # 均值 1330
-    ("元婴期", 3400, 4400),   # 均值 3900
+    ("炼气期",  115,  150),   # 均值 132.5
+    ("筑基期",  300,  400),   # 均值 350
+    ("金丹期", 1500, 1800),   # 均值 1650
+    ("元婴期", 2600, 3400),   # 均值 3000
 ]
 LIFESPAN_SAFE_RATIO = 0.72   # 占寿元 72% 以下绝无寿终之虞
 
-# 静养续命：每 3 轮 rest 涨 3.5 岁，封顶 +60
+# 静养续命：每 3 轮 rest 涨 3.5 岁，封顶为「当前寿元上限」的 12%
+# （v3：由写死的 +60 绝对值改为比例——否则机制在后期境界形同虚设。
+#   筑基 base 350 → +42；金丹 base 1650 → +198）
 REST_LIFE_BONUS_EVERY = 3
 REST_LIFE_BONUS = 3.5
-REST_LIFE_BONUS_CAP = 60.0
+REST_LIFE_BONUS_CAP = 0.12
 
 # 闭门造车：只有「真·枯坐」（cultivate）才衰减，静养（rest）不算枯坐；
 # 连击加成仍对静养生效（CULTIVATE_TAGS 见上）。两个计数器必须分开。
 SECLUSION_TAGS = ("cultivate",)
+
+
+# ---------------------------------------------------------------- 探索三档 + 机缘物件（v3 · P1）
+# 设计核心：探险不是「用时间换寿元」，而是「用风险换效率」。
+# 探索掉落功法与法宝，提供**修炼效率**与**突破成功率**加成——这是纯闭关永远拿不到的。
+# 数值来源《墨问仙途 下一版设计文档》§2.3 / §2.4（n=4000/档 蒙特卡洛标定）。
+EXPLORE_TIERS = {
+    "low":  {"days": (5, 20),   "death": 0.0000, "drop": 0.00, "fortune": 0.05,
+             "rare": False, "label": "寻常走动"},   # 社交、打探消息
+    "mid":  {"days": (25, 60),  "death": 0.0008, "drop": 0.75, "fortune": 0.22,
+             "rare": False, "label": "远行历练"},   # 寻常机缘、采药、跑商
+    "high": {"days": (80, 160), "death": 0.0120, "drop": 0.90, "fortune": 0.30,
+             "rare": True,  "label": "秘境探险"},   # 秘境奇遇、争夺宝物
+}
+DEFAULT_EXPLORE_TIER = "mid"      # 未指定档位（如自由输入）时的默认
+# ⚠️ 死亡率的绝对红线：探险流一生出门 200~400 次，死亡率乘法累积，
+#    单次超 0.4% 则探险流综合分劣于纯闭关（数学问题，非手感问题）。
+EXPLORE_DEATH_CEILING = 0.004
+
+# 机缘物件：w=权重，eff=闭关效率加成，bp=突破成功率加成，prot=护道符保护标记，exp=灵丹即时修为
+TREASURE = {
+    "residual_scroll": {"name": "功法残卷", "w": 28, "eff": 0.030, "bp": 0.000, "prot": 0.0, "rare": False},
+    "rare_manual":     {"name": "上古秘籍", "w": 14, "eff": 0.060, "bp": 0.000, "prot": 0.0, "rare": False},
+    "elixir":          {"name": "灵丹",     "w": 20, "eff": 0.000, "bp": 0.000, "prot": 0.0, "rare": False,
+                        "exp": (150, 600)},   # 唯一直接给修为的物件
+    "enlight_stone":   {"name": "悟道石",   "w": 18, "eff": 0.000, "bp": 0.030, "prot": 0.0, "rare": False},
+    "guard_talisman":  {"name": "护道符",   "w": 16, "eff": 0.000, "bp": 0.000, "prot": 1.0, "rare": False},
+    "immortal_art":    {"name": "仙家真诀", "w": 4,  "eff": 0.120, "bp": 0.000, "prot": 0.0, "rare": True},
+}
+TREASURE_CAP = {"residual_scroll": 6, "rare_manual": 4, "immortal_art": 2,
+                "enlight_stone": 4, "guard_talisman": 1}
+# 效率加成只作用于「修行」——绝不可作用于探索，否则探险流的乘数会自我叠乘、滚雪球失控。
+TREASURE_EFF_TAGS = ("cultivate", "rest")
+
+EXPLORE_DEATH_TEXT = (
+    "\n\n行至荒僻处，变故陡生——你终究没能全身而退。"
+    "这一世的路，断在了半途。"
+)
+
+
+def treasure_eff_bonus(treasures: Any) -> float:
+    """已得物件的闭关效率加成合计（乘数，随境界复利）。"""
+    if not isinstance(treasures, dict):
+        return 0.0
+    total = 0.0
+    for k, n in treasures.items():
+        spec = TREASURE.get(k)
+        if spec:
+            total += spec["eff"] * _to_int(n, 0)
+    return total
+
+
+def treasure_break_bonus(treasures: Any) -> float:
+    """已得物件的突破成功率加成合计（悟道石）。"""
+    if not isinstance(treasures, dict):
+        return 0.0
+    total = 0.0
+    for k, n in treasures.items():
+        spec = TREASURE.get(k)
+        if spec:
+            total += spec["bp"] * _to_int(n, 0)
+    return total
+
+
+def has_guard_talisman(treasures: Any) -> bool:
+    return isinstance(treasures, dict) and _to_int(treasures.get("guard_talisman"), 0) > 0
+
+
+def _add_treasure(state: dict, key: str, n: int = 1) -> int:
+    """加一件机缘物件（受叠加上限约束），返回实际入账数量。"""
+    spec = TREASURE.get(key)
+    if not spec:
+        return 0
+    cap = TREASURE_CAP.get(key, 99)
+    t = state.setdefault("treasures", {})
+    cur = _to_int(t.get(key), 0)
+    add = max(0, min(n, cap - cur))
+    if add > 0:
+        t[key] = cur + add
+    return add
+
+
+def _consume_treasure(state: dict, key: str, n: int = 1) -> None:
+    """消耗一件机缘物件（用尽即从 treasures 移除）。"""
+    t = state.get("treasures")
+    if not isinstance(t, dict):
+        return
+    left = _to_int(t.get(key), 0) - n
+    if left > 0:
+        t[key] = left
+    else:
+        t.pop(key, None)
+
+
+def roll_treasure(tier: str) -> str:
+    """按档位权重掷一件机缘物件；高风险档才可能出稀有（仙家真诀）。"""
+    allow_rare = bool(EXPLORE_TIERS.get(tier, EXPLORE_TIERS[DEFAULT_EXPLORE_TIER]).get("rare"))
+    pool = [(k, TREASURE[k]["w"]) for k in TREASURE if allow_rare or not TREASURE[k]["rare"]]
+    total = sum(w for _, w in pool)
+    r = random.random() * total
+    acc = 0.0
+    for k, w in pool:
+        acc += w
+        if r < acc:
+            return k
+    return pool[-1][0]
+
+
+def explore_tier_of(action: Any) -> str | None:
+    """从行动里解出探索档位：探索行动的 risk(low/mid/high) 即档位；非探索返回 None。"""
+    if infer_action_tag(action) != "explore":
+        return None
+    risk = str((action or {}).get("risk") or "").strip().lower() if isinstance(action, dict) else ""
+    return risk if risk in EXPLORE_TIERS else DEFAULT_EXPLORE_TIER
 
 LIFESPAN_DEATH_TEXT = (
     "\n\n你忽然觉得手中的物事重得拿不住。窗外的日头还是那轮日头，" \
@@ -548,7 +678,7 @@ def lifespan_hint(age: int, limit: int) -> tuple[str, str]:
 def age_info(state: dict) -> dict:
     """前端状态栏用：年岁/寿元/占比/分级提示。"""
     age = _to_int(state.get("age"), START_AGE)
-    limit = _to_int(state.get("lifespan"), 165)
+    limit = _to_int(state.get("lifespan"), 132)
     text, level = lifespan_hint(age, limit)
     return {
         "age": age,
@@ -563,12 +693,25 @@ def age_info(state: dict) -> dict:
     }
 
 
-def action_exp(action_tag: str) -> tuple:
+def action_exp(action_tag: str, tier: str | None = None) -> tuple:
     """本轮的时间与修为产出。返回 (修为, 天数, 是否奇遇)。
 
     修为 = 天数 × 日效率（+ 奇遇补正）。天数同时驱动年岁推进——
     时间与修为同源，是整套寿元系统的地基。
+
+    探索走 EXPLORE_TIERS 三档：档位决定耗时与奇遇率（低/中/高 = 寻常走动/远行历练/秘境探险）。
     """
+    if action_tag == "explore" and tier in EXPLORE_TIERS:
+        t = EXPLORE_TIERS[tier]
+        lo, hi = t["days"]
+        days = random.randint(lo, hi)
+        exp = days * DAY_EFF.get("explore", 0.004)
+        fortune = False
+        if t["fortune"] and random.random() < t["fortune"]:
+            f_lo, f_hi = FORTUNE_EXP.get("explore", (10, 60))
+            exp += random.randint(f_lo, f_hi)
+            fortune = True
+        return exp, days, fortune
     lo, hi = ACTION_DAYS.get(action_tag, (5, 20))
     days = random.randint(lo, hi)
     exp = days * DAY_EFF.get(action_tag, 0.005)
@@ -584,7 +727,7 @@ def action_exp(action_tag: str) -> tuple:
 def check_lifespan_death(state: dict) -> bool:
     """寿元判定：越老越易死。返回是否寿终。必须在回合最末调用。"""
     if random.random() < death_risk(_to_int(state.get("age"), START_AGE),
-                                    _to_int(state.get("lifespan"), 165)):
+                                    _to_int(state.get("lifespan"), 132)):
         state["dead"] = True
         return True
     return False
@@ -796,9 +939,16 @@ def sanitize_state(raw: dict) -> dict:
     days_total = _int(raw.get("days"), 0, 9999999, 0)
     age_now = START_AGE + days_total // DAYS_PER_YEAR
     stage_now = _stage_of(realm_index)
-    life_bonus = round(_flt(raw.get("life_bonus"), 0.0, REST_LIFE_BONUS_CAP, 0.0), 1)
-    _ls = _int(raw.get("lifespan"), 0, 5000, 0)
-    lifespan_now = clamp(_ls if _ls else roll_lifespan(stage_now), 100, 5000)
+    # 静养续命上限 = 当前境界「基础寿元」的 12%（v3：由写死的 +60 绝对值改为比例，
+    # 才随境界缩放——否则续命机制在后期境界形同虚设）。存档里 lifespan 已含续命，故先剥离。
+    _ls_raw = _int(raw.get("lifespan"), 0, 5000, 0)
+    _lb_raw = _to_float(raw.get("life_bonus"), 0.0)
+    base_ls = (_ls_raw - int(_lb_raw)) if _ls_raw > 0 else 0
+    if base_ls <= 0:
+        base_ls = roll_lifespan(stage_now)
+    base_ls = clamp(base_ls, 100, 5000)
+    life_bonus = round(clamp(_lb_raw, 0.0, max(1.0, base_ls * REST_LIFE_BONUS_CAP)), 1)
+    lifespan_now = clamp(base_ls + int(life_bonus), 100, 5000)
     hp_max = _int(raw.get("hp_max"), 100, 400, hp_max_of(realm_index))
     qi_max = _int(raw.get("qi_max"), 50, 250, qi_max_of(realm_index))
 
@@ -870,6 +1020,16 @@ def sanitize_state(raw: dict) -> dict:
     # 文风回声（最近数轮开篇，防 AI 复读用）
     style_echo = [str(h)[:16] for h in (raw.get("style_echo") or [])[:8] if str(h).strip()]
 
+    # 机缘物件（探索所得功法/法宝）：只认表内键，且按叠加上限钳制
+    treasures = {}
+    _tr_raw = raw.get("treasures")
+    if isinstance(_tr_raw, dict):
+        for k, v in _tr_raw.items():
+            if k in TREASURE:
+                n = _int(v, 0, TREASURE_CAP.get(k, 99), 0)
+                if n > 0:
+                    treasures[k] = n
+
     return {
         "realm_index": realm_index,
         "hp": _int(raw.get("hp"), 0, hp_max, hp_max),
@@ -899,6 +1059,10 @@ def sanitize_state(raw: dict) -> dict:
         "rest_count": _int(raw.get("rest_count"), 0, 9999, 0),
         "seclusion_streak": _int(raw.get("seclusion_streak"), 0, STREAK_STORE_MAX, 0),  # 枯坐轮数（仅 cultivate）
         "dead": bool(raw.get("dead")),            # 已寿终（轮回前不再推进）
+        # ---- 机缘物件（v3 · 探索所得）----
+        "treasures": treasures,                   # {"residual_scroll": 3, ...}
+        "eff_bonus": round(treasure_eff_bonus(treasures), 3),    # 派生：闭关效率加成
+        "break_bonus": round(treasure_break_bonus(treasures), 3),  # 派生：突破成功率加成
     }
 
 
@@ -955,9 +1119,15 @@ def apply_trial(state: dict, trial: dict | None) -> dict | None:
             view["lifespan_gain"] = state["lifespan"] - old_ls
     else:
         fail_streak = state.get("fail_streak", 0)
-        # 修为折损递减：首次保留 70%，其后每败一次 +5%，封顶 85%
-        retention = 0.70 + min(fail_streak * 0.05, 0.15)
-        state["exp"] = int(state["exp"] * retention)
+        if has_guard_talisman(state.get("treasures")):
+            # 护道符（一次性）：冲关失败不折损修为，用掉一张。
+            # 它切断的是「失败 → 修为折损 → 拖长暴露 → 死亡」这条致死链条，是全部物件里性价比最高的。
+            _consume_treasure(state, "guard_talisman", 1)
+            view["guard_talisman"] = True
+        else:
+            # 修为折损递减：首次保留 70%，其后每败一次 +5%，封顶 85%
+            retention = 0.70 + min(fail_streak * 0.05, 0.15)
+            state["exp"] = int(state["exp"] * retention)
         state["hp"] = clamp(state["hp"] - 15, 0, state["hp_max"])
         state["fail_streak"] = fail_streak + 1
     return view
@@ -2011,7 +2181,7 @@ def _ending_payload(state: dict, action_text: str) -> dict:
     state["qi_max"] += 15
     state["hp"] = state["hp_max"]
     state["qi"] = state["qi_max"]
-    # 炼气 → 筑基：寿元重掷（140~190 → 390~510），这一跳就是「筑基」的全部意义
+    # 炼气 → 筑基：寿元重掷（115~150 → 300~400），这一跳就是「筑基」的全部意义
     if _stage_of(MAX_REALM_INDEX) != _stage_of(8):
         state["lifespan"] = roll_lifespan(_stage_of(MAX_REALM_INDEX)) + int(state.get("life_bonus") or 0)
 
@@ -2075,16 +2245,20 @@ def health():
 
 
 def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
-                      action_tag: str = "other", risk_roll: float | None = None):
+                      action_tag: str = "other", risk_roll: float | None = None,
+                      tier: str | None = None):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
     action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。
+    tier 为探索档位（low/mid/high），非探索行动忽略。
 
     修为结算改为「按天产出」（v2）：先掷本轮天数 → 修为 = 天数 × 日效率（+ 奇遇补正），
-    再乘 灵根 × 连击 × 状态 × 闭门 × 风险。时间与修为同源，寿元才有意义。"""
+    再乘 灵根 × 连击 × 状态 × 闭门 × 风险 × 机缘效率。时间与修为同源，寿元才有意义。"""
+    if action_tag == "explore" and tier not in EXPLORE_TIERS:
+        tier = DEFAULT_EXPLORE_TIER
     delta_applied = clamp_ai_delta(data.get("delta"), state)
     ai_exp = delta_applied["exp"]
-    day_exp, days, fortune = action_exp(action_tag)
+    day_exp, days, fortune = action_exp(action_tag, tier)
     if ai_exp < 0:
         # AI 判定的修为折损（走火入魔、散功等）原样保留，不与时间产出对冲
         seclusion_hint = False
@@ -2106,6 +2280,9 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         detail["day_exp"] = round(day_exp, 1)
         detail["fortune"] = fortune
         detail["ai_exp"] = ai_exp
+        if action_tag == "explore" and tier in EXPLORE_TIERS:
+            detail["tier"] = tier
+            detail["tier_label"] = EXPLORE_TIERS[tier]["label"]
         meta["cultivate"] = detail
         seclusion_hint = detail["secluded"]
     apply_delta(state, delta_applied)
@@ -2134,16 +2311,44 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     state["days"] = _to_int(state.get("days"), 0) + days
     state["age"] = START_AGE + state["days"] // DAYS_PER_YEAR
 
-    # ---- ⑥ 静养续命：每 3 轮 rest，寿元上限 +3.5（封顶 +60）----
-    if action_tag == "rest":
+    # ---- ⑤' 探索结算（v3 · P1）：机缘掉落 / 灵丹即时修为 / 探索陨落 ----
+    # 探险用风险换效率：掉落功法与法宝提供效率与突破加成，是纯闭关拿不到的。
+    if action_tag == "explore" and not state.get("dead"):
+        tspec = EXPLORE_TIERS.get(tier or DEFAULT_EXPLORE_TIER, EXPLORE_TIERS[DEFAULT_EXPLORE_TIER])
+        meta["explore"] = {"tier": tier or DEFAULT_EXPLORE_TIER, "label": tspec["label"]}
+        if tspec["death"] > 0 and random.random() < tspec["death"]:
+            # 探索陨落：与寿元判定彼此独立的风险来源（硬红线 0.4%）
+            state["dead"] = True
+            meta["explore_death"] = True
+            narrative = narrative + EXPLORE_DEATH_TEXT
+            memory_line = memory_line or f"出行遇险，{state['age']}岁殒命半途"
+        elif tspec["drop"] > 0 and random.random() < tspec["drop"]:
+            key = roll_treasure(tier or DEFAULT_EXPLORE_TIER)   # 稀有件只有高风险档能出
+            spec_t = TREASURE[key]
+            if key == "elixir":
+                lo_e, hi_e = spec_t["exp"]
+                gain = random.randint(lo_e, hi_e)
+                state["exp"] = clamp(state["exp"] + gain, 0, exp_max_of(state["realm_index"]))
+                delta_applied["exp"] += gain
+                meta["treasure"] = {"key": key, "name": spec_t["name"], "exp": gain}
+                memory_line = memory_line or f"得灵丹，修为骤增{gain}"
+            else:
+                if _add_treasure(state, key, 1) > 0:
+                    meta["treasure"] = {"key": key, "name": spec_t["name"], "qty": 1}
+                    memory_line = memory_line or f"得{spec_t['name']}"
+
+    # ---- ⑥ 静养续命：每 3 轮 rest 涨 3.5 岁，封顶为「基础寿元的 12%」----
+    if action_tag == "rest" and not state.get("dead"):
         state["rest_count"] = _to_int(state.get("rest_count"), 0) + 1
         if state["rest_count"] % REST_LIFE_BONUS_EVERY == 0:
             bonus_now = _to_float(state.get("life_bonus"), 0.0)
-            bonus_new = min(bonus_now + REST_LIFE_BONUS, REST_LIFE_BONUS_CAP)
-            gained = int(bonus_new) - int(bonus_now)   # 只在跨过整岁时真正加到寿元上
+            cur_life = _to_int(state.get("lifespan"), 132)
+            base_ls = max(100, cur_life - int(bonus_now))       # 剥离已含的续命，得基础寿元
+            bonus_new = min(bonus_now + REST_LIFE_BONUS, base_ls * REST_LIFE_BONUS_CAP)
+            gained = int(bonus_new) - int(bonus_now)            # 只在跨过整岁时真正加到寿元上
             state["life_bonus"] = round(bonus_new, 1)
             if gained > 0:
-                state["lifespan"] = _to_int(state.get("lifespan"), 165) + gained
+                state["lifespan"] = cur_life + gained
                 meta["life_extended"] = gained
 
     npc_events = apply_npc_updates(state, data)
@@ -2284,10 +2489,11 @@ def act(req: ActReq):
         breakthrough_view = apply_trial(state, trial)
         # ④ AI（或演武/兜底）生成剧情 ⑤~⑨ 后处理共用
         action_tag = infer_action_tag(action)
+        tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
         forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
         data, meta = generate_scene(state, action, trial_text, root_newly, forced_event)
         narrative, choices, delta_applied, near_death_flag, npc_events = \
-            _postprocess_turn(state, data, meta, action_text, action_tag)
+            _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier)
         _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
         return {
@@ -2300,7 +2506,7 @@ def act(req: ActReq):
             "breakthrough": breakthrough_view,
             "near_death": near_death_flag,
             "ending": bool(trial and trial.get("ending")),
-            "dead": bool(meta.get("lifespan_death")),
+            "dead": bool(meta.get("lifespan_death") or meta.get("explore_death")),
             "engine_meta": meta,
         }
     except Exception as e:
@@ -2357,6 +2563,7 @@ def act_stream(req: ActReq):
             else:
                 breakthrough_view = apply_trial(state, trial)
                 action_tag = infer_action_tag(action)
+                tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
                 forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
                 if API_KEY and _OPENAI_OK:
                     # ④ 流式真天道：边生成边推
@@ -2387,7 +2594,7 @@ def act_stream(req: ActReq):
 
             # ⑤~⑨ 与 /api/act 完全共用的后处理（action_tag 已在上方闭门判定处算好）
             narrative, choices, delta_applied, near_death_flag, npc_events = \
-                _postprocess_turn(state, data, meta, action_text, action_tag)
+                _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier)
             _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
             # 流式叙事是增量的，done 里带完整文本供前端静默校正
@@ -2401,7 +2608,7 @@ def act_stream(req: ActReq):
                 "breakthrough": breakthrough_view,
                 "near_death": near_death_flag,
                 "ending": bool(trial and trial.get("ending")),
-                "dead": bool(meta.get("lifespan_death")),
+                "dead": bool(meta.get("lifespan_death") or meta.get("explore_death")),
                 "engine_meta": meta,
             })
         except Exception as e:

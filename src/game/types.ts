@@ -38,10 +38,14 @@ export interface GameState {
   days?: number;             // 累计天数（唯一权威，age 由它推导）
   age?: number;              // 当前年岁
   lifespan?: number;         // 寿元上限（突破大境界时重掷）
-  life_bonus?: number;       // 静养续命累计（封顶 60）
+  life_bonus?: number;       // 静养续命累计（封顶 = 基础寿元的 12%）
   rest_count?: number;       // 累计静养轮数
   seclusion_streak?: number; // 枯坐轮数（仅 cultivate 累加，出门/静养即断）
   dead?: boolean;            // 已寿终
+  /* ---- 机缘物件（v3 · 探索所得）---- */
+  treasures?: Record<string, number>;  // {"residual_scroll": 3, "guard_talisman": 1, ...}
+  eff_bonus?: number;                  // 闭关效率加成（由 treasures 派生）
+  break_bonus?: number;                // 突破成功率加成（由 treasures 派生）
 }
 
 /** 寿元信息（engine_meta.age）——状态栏直接渲染 */
@@ -112,6 +116,10 @@ export interface CultivateInfo {
   day_exp?: number;      // 本轮「时间沉淀」修为（未含奇遇与系数）
   fortune?: boolean;     // 本轮是否触发奇遇
   ai_exp?: number;       // AI 提议的修为（仅叙事参考，权重 0 时不入账）
+  eff?: number;          // 机缘效率乘数（1.0 = 无加成）
+  eff_bonus?: number;    // 机缘效率加成（功法/秘籍/真诀）
+  tier?: string;         // 探索档位（low/mid/high，仅 explore）
+  tier_label?: string;   // 探索档位中文名（寻常走动/远行历练/秘境探险）
 }
 
 /** 突破动画数据：跨大境界时附带寿元增量 */
@@ -120,6 +128,7 @@ export interface Breakthrough {
   from: string;
   to: string;
   lifespan_gain?: number;  // 寿元上限增加（跨大境界重掷）
+  guard_talisman?: boolean; // 本次失败由护道符免除修为折损
 }
 
 export interface EngineMeta {
@@ -135,6 +144,9 @@ export interface EngineMeta {
   age?: AgeInfo;               // 本轮年岁/寿元/风险分级
   life_extended?: number;      // 本轮静养续命增加的寿元
   lifespan_death?: boolean;    // 本轮寿终
+  treasure?: { key: string; name: string; qty?: number; exp?: number };  // 本轮探索所得机缘
+  explore?: { tier: string; label: string };   // 本轮探索档位
+  explore_death?: boolean;     // 本轮探索陨落
 }
 
 export interface ActResponse {
@@ -147,7 +159,7 @@ export interface ActResponse {
   breakthrough: Breakthrough | null;
   near_death: boolean;
   ending: boolean;
-  dead?: boolean;            // 本轮寿终（寿元耗尽）
+  dead?: boolean;            // 本轮寿终（寿元耗尽 或 探索陨落）
   engine_meta: EngineMeta;
   error?: { code: string; message: string };
 }
@@ -165,6 +177,7 @@ export interface GameAction {
   name?: string;
   qty?: number;  // 坊市买卖数量
   tag?: string;  // 选项标签（fight → 后端掷斗法判定）
+  risk?: Risk;   // 风险档（explore 时即探索档位：low/mid/high）
 }
 
 /** 叙事区的一个段落（一段剧情） */
