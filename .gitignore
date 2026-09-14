@@ -2,8 +2,18 @@ node_modules/
 dist/
 __pycache__/
 *.pyc
-.env
 .DS_Store
+
+# 环境变量文件（.env.example 作为模板，保留入库）
+.env
+.env.*
+!.env.example
+
+# Vercel CLI 本地链接信息（含 team/project id）
+.vercel
 
 # pnpm 安装期在项目根留下的临时文件
 _tmp_*
+
+# 会话期临时诊断/日志文件（调试用，不入库）
+_*.txt
