@@ -68,7 +68,10 @@ function parseExploreTiers(): Record<string, BackendTier> {
   return out;
 }
 
-interface BackendTreasure { name: string; eff: number; bp: number; prot: boolean; rare: boolean; exp?: [number, number]; }
+interface BackendTreasure {
+  name: string; eff: number; bp: number; prot: boolean; rare: boolean;
+  effBuff?: number; buffRounds?: number;
+}
 
 function parseTreasure(): Record<string, BackendTreasure> {
   const body = parseBlock("TREASURE");
@@ -80,12 +83,15 @@ function parseTreasure(): Record<string, BackendTreasure> {
     const bp = inner.match(/"bp":\s*([\d.]+)/);
     const prot = inner.match(/"prot":\s*([\d.]+)/);
     const rare = inner.match(/"rare":\s*(True|False)/);
-    const exp = inner.match(/"exp":\s*\((\d+),\s*(\d+)\)/);
+    // v3.1：灵丹改为限时效率 buff（eff_buff / buff_rounds），不再有裸修为 exp
+    const effBuff = inner.match(/"eff_buff":\s*([\d.]+)/);
+    const buffRounds = inner.match(/"buff_rounds":\s*(\d+)/);
     if (!name || !eff || !bp || !prot || !rare) throw new Error(`TREASURE.${m[1]} 解析失败`);
     out[m[1]] = {
       name: name[1], eff: Number(eff[1]), bp: Number(bp[1]),
       prot: Number(prot[1]) > 0, rare: rare[1] === "True",
-      exp: exp ? [Number(exp[1]), Number(exp[2])] : undefined,
+      effBuff: effBuff ? Number(effBuff[1]) : undefined,
+      buffRounds: buffRounds ? Number(buffRounds[1]) : undefined,
     };
   }
   if (Object.keys(out).length !== 6) throw new Error("TREASURE 解析不全");
@@ -174,12 +180,19 @@ describe("机缘物件与后端同源", () => {
     }
   });
 
-  it("灵丹是唯一即时给修为的物件，且区间一致", () => {
+  it("灵丹不再给裸修为，而是限时效率 buff，且数值与后端一致", () => {
     const b = backendTreasure.elixir;
-    expect(TREASURE_INFO.elixir.exp).toEqual(b.exp);
-    const givers = Object.values(TREASURE_INFO).filter((t) => t.exp);
-    expect(givers).toHaveLength(1);
-    expect(givers[0].key).toBe("elixir");
+    expect(TREASURE_INFO.elixir.effBuff).toBeCloseTo(b.effBuff as number, 6);
+    expect(TREASURE_INFO.elixir.buffRounds).toBe(b.buffRounds);
+    // v3.1 地基修复：任何「即时给修为」的物件都不允许存在
+    expect((TREASURE_INFO.elixir as { exp?: unknown }).exp).toBeUndefined();
+    expect(b.effBuff).toBeGreaterThan(0);
+    expect(b.buffRounds).toBeGreaterThan(0);
+  });
+
+  it("灵丹的丹力不计入永久效率加成（否则等于一次服丹永久变强）", () => {
+    expect(treasureEffBonus({ elixir: 3 })).toBe(0);
+    expect(treasureBreakBonus({ elixir: 3 })).toBe(0);
   });
 
   it("叠加上限与后端 TREASURE_CAP 一致", () => {
@@ -261,5 +274,23 @@ describe("P1 数据契约（types.ts）", () => {
   it("GameAction 支持 risk 档位（探索三档的入口）", () => {
     const iface = typesSrc.match(/interface GameAction\s*\{([\s\S]*?)\n\}/);
     expect(iface?.[1]).toContain("risk");
+  });
+
+  it("v3.1 契约：灵丹 buff 轮数进 GameState，服丹成为独立动作", () => {
+    const state = typesSrc.match(/interface GameState\s*\{([\s\S]*?)\n\}/);
+    expect(state?.[1], "GameState 缺 elixir_buff").toContain("elixir_buff");
+    const action = typesSrc.match(/interface GameAction\s*\{([\s\S]*?)\n\}/);
+    expect(action?.[1], "GameAction 缺 use_elixir").toContain("use_elixir");
+    const cult = typesSrc.match(/interface CultivateInfo\s*\{([\s\S]*?)\n\}/);
+    expect(cult?.[1], "CultivateInfo 缺 elixir_buff").toContain("elixir_buff");
+  });
+
+  it("v3.1 契约：探索掉落的 meta.treasure 不再带 exp（灵丹已入背包）", () => {
+    expect(typesSrc).toMatch(/treasure\?:\s*\{\s*key:\s*string;\s*name:\s*string;\s*qty\?:\s*number\s*\}/);
+  });
+
+  it("v3.1 契约：EngineMeta 覆盖服丹与 buff 倒计时", () => {
+    const meta = typesSrc.match(/interface EngineMeta\s*\{([\s\S]*?)\n\}/);
+    expect(meta?.[1]).toContain("elixir");
   });
 });

@@ -174,6 +174,7 @@ function applySceneEffects(d: ActResponse) {
   // 时间：闭关动辄经年，必须让玩家意识到「这一轮花掉了多少寿命」
   const days = d.engine_meta?.cultivate?.days ?? 0;
   if (days >= 30) floatText(daysText(days), "f-time");
+  else if (d.engine_meta?.cultivate?.short) floatText("片刻行功 · 只过了一两日", "f-time");
   // 奇遇：非闭关路线的主要成长来源，值得单独一跳
   if (d.engine_meta?.cultivate?.fortune) floatText("【奇遇】忽有所悟", "f-item");
   // 静养续命：把「寿元 +N」摆出来，静养才不是隐形机制
@@ -181,12 +182,12 @@ function applySceneEffects(d: ActResponse) {
   // 探索档位：出门有多险、走了多久，必须让玩家看见（三档差异全在这里）
   const ex = d.engine_meta?.explore;
   if (ex && d.engine_meta?.cultivate) floatText(`探索 · ${ex.label}`, "f-time");
-  // 机缘掉落：这是「探索值得出门」的全部理由
+  // 机缘掉落：这是「探索值得出门」的全部理由（v3.1 起一律入背包，需玩家自己择机用）
   const tr = d.engine_meta?.treasure;
-  if (tr) {
-    if (tr.exp) floatText(`【灵丹】修为 +${tr.exp}`, "f-item");
-    else floatText(`得【${tr.name}】`, "f-item");
-  }
+  if (tr) floatText(`得【${tr.name}】`, "f-item");
+  // 服灵丹：丹力只加速、不凭空长修为 —— 必须把「多少轮、多少效率」说清楚
+  const el = d.engine_meta?.elixir;
+  if (el) floatText(`丹力入体 · ${el.buff} 轮效率 +${Math.round(el.eff * 100)}%`, "f-item");
   // 护道符：挡下一次冲关折损（一次性）
   if (d.breakthrough?.guard_talisman) floatText("护道符护体 · 修为未损", "f-item");
   // 探索陨落：用风险换效率的代价

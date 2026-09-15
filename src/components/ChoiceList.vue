@@ -12,6 +12,7 @@ function pick(c: Choice) {
     type: c.special === "breakthrough" ? "breakthrough" : "choice",
     id: c.id, text: c.text, tag: c.tag,
     risk: c.risk,   // 探索档位由 risk 决定：low/mid/high → 寻常走动/远行历练/秘境探险
+    short: c.short, // 片刻行功（周天/小坐）：不传则后端一次吃掉五年
   });
 }
 
@@ -28,6 +29,10 @@ function riskTxt(c: Choice) {
 function actBadge(c: Choice): { label: string; text: string; fast: boolean; volatile: boolean } {
   if (c.special === "breakthrough") return { label: "冲关", text: "冲关", fast: false, volatile: false };
   const info = actionInfo(c.tag);
+  // 片刻行功（周天/小坐）：只过一两天，修为自然少——必须让玩家看出来，否则会以为「修行变弱了」
+  if (c.tag === "cultivate" && c.short) {
+    return { label: info.label, text: `${info.label} · 片刻`, fast: false, volatile: false };
+  }
   if (c.tag === "explore") {
     // 探索档位只看风险档：这决定了耗时、掉率与性命风险
     const tier = exploreTierOfRisk(c.risk);
@@ -53,6 +58,9 @@ function actBadge(c: Choice): { label: string; text: string; fast: boolean; vola
 
 /** 悬停说明：探索给出档位取舍，其余给行动说明 */
 function actTitle(c: Choice): string {
+  if (c.tag === "cultivate" && c.short) {
+    return "片刻行功：只耗一两天，故修为有限——但在闭关间隙攒连击很划算。";
+  }
   if (c.tag === "explore" && c.special !== "breakthrough") {
     const t = exploreTierOfRisk(c.risk);
     const drop = t.drop > 0 ? `掉宝 ${Math.round(t.drop * 100)}%` : "无掉落";

@@ -153,6 +153,16 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
 .tre-chip.prot{color:#8a6030; background:rgba(180,120,30,.16); border-color:rgba(180,120,30,.6);}
 .tre-bonus{font-size:11px; letter-spacing:1px; color:var(--jade);}
 .tre-bonus.tre-break{color:#8a6030;}
+/* 灵丹：服用按钮 + 丹力倒计时。丹药只给限时效率，所以「还剩几轮」必须看得见 */
+.tre-use{
+  font-family:inherit; font-size:11px; letter-spacing:1px;
+  color:#8a2f22; background:rgba(166,58,43,.10);
+  border:1px solid rgba(166,58,43,.45); border-radius:99px;
+  padding:1px 9px; cursor:pointer;
+}
+.tre-use:hover:not(:disabled){background:rgba(166,58,43,.18);}
+.tre-use:disabled{opacity:.45; cursor:default;}
+.tre-buff{color:#8a2f22;}
 
 /* ---------- 剧情区 ---------- */
 #story-card{

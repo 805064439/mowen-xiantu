@@ -295,10 +295,11 @@ export function exploreTierOfRisk(risk?: string): ExploreTierInfo {
 export interface TreasureInfo {
   key: string;
   name: string;
-  eff: number;    // 闭关效率加成
+  eff: number;    // 闭关效率加成（永久，随境界复利）
   bp: number;     // 突破成功率加成
   prot: boolean;  // 护道符：冲关失败不折损修为（一次性）
-  exp?: [number, number];  // 灵丹：即时修为
+  effBuff?: number;     // 灵丹：服下后限时闭关效率加成
+  buffRounds?: number;  // 灵丹：buff 持续轮数
   cap: number;    // 叠加上限
   desc: string;
 }
@@ -308,8 +309,8 @@ export const TREASURE_INFO: Record<string, TreasureInfo> = {
     desc: "残缺的行功篇章，参悟后闭关效率 +3%。" },
   rare_manual: { key: "rare_manual", name: "上古秘籍", eff: 0.06, bp: 0, prot: false, cap: 4,
     desc: "上古修士的遗册，闭关效率 +6%。" },
-  elixir: { key: "elixir", name: "灵丹", eff: 0, bp: 0, prot: false, exp: [150, 600], cap: 0,
-    desc: "服下即长修为 150~600，唯一直接给修为的机缘。" },
+  elixir: { key: "elixir", name: "灵丹", eff: 0, bp: 0, prot: false, effBuff: 0.15, buffRounds: 12, cap: 0,
+    desc: "服下后 12 轮闭关与静养效率 +15%——只加速，不凭空长修为。" },
   enlight_stone: { key: "enlight_stone", name: "悟道石", eff: 0, bp: 0.03, prot: false, cap: 4,
     desc: "参悟可提升冲关成功率 +3%——筑基期是死亡主区，这等于缩短暴露时间。" },
   guard_talisman: { key: "guard_talisman", name: "护道符", eff: 0, bp: 0, prot: true, cap: 1,

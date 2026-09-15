@@ -399,6 +399,11 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
     # 机缘物件的闭关效率加成：只作用于修行（cultivate/rest），绝不作用于探索——
     # 否则探险流会「越探索越强、越强越探索」自我叠乘，滚雪球失控。
     eff_bonus = treasure_eff_bonus(state.get("treasures")) if action_tag in TREASURE_EFF_TAGS else 0.0
+    # 灵丹 buff：服丹后 N 轮内修行效率 +15%。同样只作用于修行类——
+    # 「只探索不闭关」时 buff 毫无收益，这条正是堵死「刷丹白嫖」的关键。
+    buff_now = _to_int(state.get("elixir_buff"), 0) if action_tag in TREASURE_EFF_TAGS else 0
+    if buff_now > 0:
+        eff_bonus += ELIXIR_EFF_BUFF
     eff_coeff = 1.0 + eff_bonus
     total = (root_coeff * action_coeff * streak_coeff * vitality_coeff
              * seclusion_coeff * risk_coeff * eff_coeff)
@@ -425,6 +430,7 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
         "capped": False,
         "eff": round(eff_coeff, 3),          # 机缘效率乘数（1.0 = 无加成）
         "eff_bonus": round(eff_bonus, 3),
+        "elixir_buff": buff_now,             # 灵丹 buff 剩余轮数（0 = 未服丹）
     }
     return total, detail
 
@@ -458,6 +464,13 @@ ACTION_DAYS = {
     "other":     (5, 20),      # 随缘：十数日
 }
 
+# 「片刻行功」的短修行跨度（v3.1 修复）：选项文字写「行功一个周天」「原地打坐」时，
+# 叙事暗示的是片刻工夫，绝不能吃满 1260~2340 天（那会让玩家一次点掉 5 年寿命）。
+# 周天只是「天数少」的修行 → 修为自然也少，**不引入任何 lump**，与地基原则一致。
+SHORT_CULTIVATE_DAYS = (1, 7)   # 1~7 天；可按手感收窄到 (1, 3)
+# 关键词兜底：LLM 未标 short 时，按选项文字判「短修行」（显式 short 优先）
+SHORT_CULTIVATE_HINTS = ("周天", "片刻", "小坐", "稍作", "一时半刻", "半日", "数息")
+
 # 日效率：修为 = 天数 × 日效率 × 各项系数。行动差异已由此表表达，
 # 故按天产出路径不再叠加 ACTION_CULTIVATE_COEFF（否则重复计入）。
 DAY_EFF = {
@@ -472,8 +485,13 @@ DAY_EFF = {
 # 奇遇：非闭关路线的成长来源（闭关枯坐不生奇遇，这是它必须出门的理由）
 FORTUNE_CHANCE = {"explore": 0.22, "fight": 0.15, "trade": 0.05,
                   "other": 0.06, "rest": 0.06, "cultivate": 0.0}
-FORTUNE_EXP = {"explore": (60, 240), "fight": (30, 120), "trade": (10, 60),
-               "other": (20, 90), "rest": (80, 200)}   # rest：静中悟道
+# ⚠️ 地基修复 v3.1：奇遇**不再直接给修为**。
+# 原表（explore 60~240 / rest 80~200 / …）是脱离天数的「裸修为 lump」——它让
+# 「出门逛三天」拿到的修为超过「闭关两年」，把「修为 = 天数 × 日效率」这条地基打穿，
+# 实测纯探索流入筑基率高达 94%。清空后非闭关行动不再有任何即时修为产出，
+# 修为只能来自「闭关天数 × 效率」与「主动服丹的限时效率 buff（见 elixir）」。
+# 若要恢复奇遇直修为：把区间填回本表即可（action_exp 的奇遇分支仍在，会按表生效）。
+FORTUNE_EXP = {}
 
 # AI 提议的修为是否叠加到「天数产出」之上。
 # 0.0 = 纯按天产出（v2 配平基线，AI 只管叙事）；1.0 = 两者相加（会显著加速，需重跑仿真）
@@ -525,12 +543,15 @@ DEFAULT_EXPLORE_TIER = "mid"      # 未指定档位（如自由输入）时的�
 #    单次超 0.4% 则探险流综合分劣于纯闭关（数学问题，非手感问题）。
 EXPLORE_DEATH_CEILING = 0.004
 
-# 机缘物件：w=权重，eff=闭关效率加成，bp=突破成功率加成，prot=护道符保护标记，exp=灵丹即时修为
+# 机缘物件：w=权重，eff=闭关效率加成，bp=突破成功率加成，prot=护道符保护标记
+# elixir（灵丹）为 v3.1 改写：由「裸修为 (150,600)」改为**限时效率 buff**——
+# 裸修为是「只探索刷丹再服用」的时间作弊（实测纯探索流可飙到 90% 入筑基、年仅 29 岁），
+# 改为 buff 后「只探索不闭关」服丹毫无收益，漏洞彻底堵死。详见 §2.2。
 TREASURE = {
     "residual_scroll": {"name": "功法残卷", "w": 28, "eff": 0.030, "bp": 0.000, "prot": 0.0, "rare": False},
     "rare_manual":     {"name": "上古秘籍", "w": 14, "eff": 0.060, "bp": 0.000, "prot": 0.0, "rare": False},
     "elixir":          {"name": "灵丹",     "w": 20, "eff": 0.000, "bp": 0.000, "prot": 0.0, "rare": False,
-                        "exp": (150, 600)},   # 唯一直接给修为的物件
+                        "eff_buff": 0.15, "buff_rounds": 12},  # 服下：往后 12 轮闭关/静养效率 +15%
     "enlight_stone":   {"name": "悟道石",   "w": 18, "eff": 0.000, "bp": 0.030, "prot": 0.0, "rare": False},
     "guard_talisman":  {"name": "护道符",   "w": 16, "eff": 0.000, "bp": 0.000, "prot": 1.0, "rare": False},
     "immortal_art":    {"name": "仙家真诀", "w": 4,  "eff": 0.120, "bp": 0.000, "prot": 0.0, "rare": True},
@@ -539,6 +560,11 @@ TREASURE_CAP = {"residual_scroll": 6, "rare_manual": 4, "immortal_art": 2,
                 "enlight_stone": 4, "guard_talisman": 1}
 # 效率加成只作用于「修行」——绝不可作用于探索，否则探险流的乘数会自我叠乘、滚雪球失控。
 TREASURE_EFF_TAGS = ("cultivate", "rest")
+
+# 灵丹（临时效率 buff）：说明与上限
+ELIXIR_EFF_BUFF = TREASURE["elixir"]["eff_buff"]        # +15%
+ELIXIR_BUFF_ROUNDS = TREASURE["elixir"]["buff_rounds"]  # 12 轮
+ELIXIR_NOT_OWNED_TEXT = "行囊中并无灵丹可用——此物须先在秘境或远行中寻得。"
 
 EXPLORE_DEATH_TEXT = (
     "\n\n行至荒僻处，变故陡生——你终究没能全身而退。"
@@ -693,13 +719,30 @@ def age_info(state: dict) -> dict:
     }
 
 
-def action_exp(action_tag: str, tier: str | None = None) -> tuple:
+def is_short_cultivate(action: Any) -> bool:
+    """该行动是否为「片刻行功」（周天/小坐）：只对 cultivate 生效。
+
+    ① 显式标记优先（选项里的 short 字段 / 前端透传）；
+    ② 否则按文字兜底——LLM 生成的选项常常只在文字里写「行功一个周天」而不带标记。
+    """
+    if not isinstance(action, dict) or infer_action_tag(action) != "cultivate":
+        return False
+    if action.get("short"):
+        return True
+    text = str(action.get("text") or "")
+    return any(h in text for h in SHORT_CULTIVATE_HINTS)
+
+
+def action_exp(action_tag: str, tier: str | None = None, short: bool = False) -> tuple:
     """本轮的时间与修为产出。返回 (修为, 天数, 是否奇遇)。
 
-    修为 = 天数 × 日效率（+ 奇遇补正）。天数同时驱动年岁推进——
-    时间与修为同源，是整套寿元系统的地基。
+    修为 = 天数 × 日效率。天数同时驱动年岁推进——
+    时间与修为同源，是整套寿元系统的地基。**任何脱离天数的裸修为 lump 都不允许存在**。
 
     探索走 EXPLORE_TIERS 三档：档位决定耗时与奇遇率（低/中/高 = 寻常走动/远行历练/秘境探险）。
+    short=True 表示「片刻行功」（周天/小坐），只对 cultivate 生效，走 SHORT_CULTIVATE_DAYS。
+
+    奇遇（FORTUNE_EXP）现已清空：非闭关行动不再即时给修为。表若被填回，此处会照表生效。
     """
     if action_tag == "explore" and tier in EXPLORE_TIERS:
         t = EXPLORE_TIERS[tier]
@@ -707,19 +750,22 @@ def action_exp(action_tag: str, tier: str | None = None) -> tuple:
         days = random.randint(lo, hi)
         exp = days * DAY_EFF.get("explore", 0.004)
         fortune = False
-        if t["fortune"] and random.random() < t["fortune"]:
-            f_lo, f_hi = FORTUNE_EXP.get("explore", (10, 60))
-            exp += random.randint(f_lo, f_hi)
+        f_range = FORTUNE_EXP.get("explore")
+        if f_range and t["fortune"] and random.random() < t["fortune"]:
+            exp += random.randint(*f_range)
             fortune = True
         return exp, days, fortune
-    lo, hi = ACTION_DAYS.get(action_tag, (5, 20))
+    if action_tag == "cultivate" and short:
+        lo, hi = SHORT_CULTIVATE_DAYS          # 周天/小坐：1~7 天，不是五年
+    else:
+        lo, hi = ACTION_DAYS.get(action_tag, (5, 20))
     days = random.randint(lo, hi)
     exp = days * DAY_EFF.get(action_tag, 0.005)
     fortune = False
     chance = FORTUNE_CHANCE.get(action_tag, 0.0)
-    if chance and random.random() < chance:
-        f_lo, f_hi = FORTUNE_EXP.get(action_tag, (10, 60))
-        exp += random.randint(f_lo, f_hi)
+    f_range = FORTUNE_EXP.get(action_tag)
+    if f_range and chance and random.random() < chance:
+        exp += random.randint(*f_range)
         fortune = True
     return exp, days, fortune
 
@@ -1063,6 +1109,8 @@ def sanitize_state(raw: dict) -> dict:
         "treasures": treasures,                   # {"residual_scroll": 3, ...}
         "eff_bonus": round(treasure_eff_bonus(treasures), 3),    # 派生：闭关效率加成
         "break_bonus": round(treasure_break_bonus(treasures), 3),  # 派生：突破成功率加成
+        # 灵丹限时 buff 剩余轮数（白名单 + 上限钳制，防注入「9999 轮」）
+        "elixir_buff": _int(raw.get("elixir_buff"), 0, ELIXIR_BUFF_ROUNDS, 0),
     }
 
 
@@ -1477,7 +1525,8 @@ def apply_delta(state: dict, d: dict) -> None:
 # ---------------------------------------------------------------- 选项后处理
 VALID_RISK = ("low", "mid", "high")
 FILLER_CHOICES = [
-    {"text": "原地打坐，调息养气", "risk": "low", "tag": "cultivate"},
+    # 文字写「原地打坐」是片刻工夫 → short: True，否则会一次吃掉五年（§6 修复）
+    {"text": "原地打坐，调息养气", "risk": "low", "tag": "cultivate", "short": True},
     {"text": "四下查看，谨慎观察周遭", "risk": "low", "tag": "explore"},
     {"text": "收拾行装，继续赶路", "risk": "mid", "tag": "explore"},
 ]
@@ -1495,7 +1544,9 @@ def normalize_choices(raw: Any, state: dict) -> list:
             risk = c.get("risk") if c.get("risk") in VALID_RISK else "mid"
             # tag 归一化：非法/中文 tag 按文本回推，保证「行动系数」这套机制不会退化
             tag = infer_action_tag({"text": text, "tag": c.get("tag")})
-            out.append({"id": "ABC"[len(out)], "text": text, "risk": risk, "tag": tag})
+            # short 必须保留：否则「行功一个周天」会被重建回默认的 5 年跨度（§6 修复）
+            out.append({"id": "ABC"[len(out)], "text": text, "risk": risk, "tag": tag,
+                        "short": bool(c.get("short"))})
     while len(out) < 3:
         out.append({"id": "ABC"[len(out)], **random.choice(FILLER_CHOICES)})
     out = out[:3]
@@ -1539,6 +1590,9 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
    - fight：动手、迎战、厮杀 → 修行较快，但有凶险
    - other：以上皆不属
    三个选项的 tag 要拉开区分（勿三个同 tag），让玩家能借此选择自己的修行节奏。
+   **时长必须与文字相符**：整段闭关 / 苦修 / 长年参悟 = 默认（一次跨数年）；
+   若选项文字是片刻工夫（"行功一个周天""小坐片刻""打坐半日""稍作调息"），必须额外给出 "short": true——
+   否则玩家点一下「行功周天」会被推进整整五年，这是严重的叙事与机制脱节。
 4. delta：本轮数值变化，与剧情严格一致且幅度克制：hp、qi 变化不超过 ±30，exp 不超过 ±40，spirit_stones 变化不超过 ±80；无变化则全部为 0。
 5. items_add 最多 1 件物品，rarity 为"下品"（常见）、"中品"（偶尔）或"上品"（稀有，非大机缘不可得）；items_remove 只能移除玩家已有物品。品级影响药效，需与剧情匹配。
 6. 不得杀死主角（可重伤、可陷入绝境）；不得无剧情依据地赠送贵重之物。
@@ -1555,7 +1609,7 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 {
   "narrative": "……",
   "choices": [
-    {"id": "A", "text": "……", "risk": "low|mid|high", "tag": "explore|cultivate|trade|fight|rest|other"}
+    {"id": "A", "text": "……", "risk": "low|mid|high", "tag": "explore|cultivate|trade|fight|rest|other", "short": false}
   ],
   "delta": {
     "hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
@@ -1644,6 +1698,8 @@ def sanitize_last_choices(raw: Any, state: dict) -> list:
             }
             if c.get("special") == "breakthrough":
                 item["special"] = "breakthrough"
+            if c.get("short"):
+                item["short"] = True          # 片刻行功标记须随「沿用上一轮选项」一起带回
             out.append(item)
     if not out:
         out = [{"id": c_id, **random.choice(FILLER_CHOICES)} for c_id in "ABC"]
@@ -1710,6 +1766,36 @@ def handle_use_item(state: dict, req: "ActReq") -> dict:
         "ending": False,
         "engine_meta": {"source": "item", "model": "天道手书", "elapsed_ms": 8,
                         "retries": 0, "tokens_in": 0, "tokens_out": 0},
+    }
+
+
+def handle_use_elixir(state: dict, req: "ActReq") -> dict:
+    """服用灵丹：纯代码动作，不调 LLM、不耗时序（与用丹同构）。
+
+    灵丹给的是**限时修行效率 buff**，不是裸修为——这是「修为 = 天数 × 效率」地基的一部分：
+    服丹只让后面的闭关跑得更快，绝不凭空多出修为。故 delta 恒为 0。
+    """
+    if _to_int((state.get("treasures") or {}).get("elixir"), 0) <= 0:
+        return {"ok": False, "error": {"code": "ELIXIR_NOT_OWNED", "message": ELIXIR_NOT_OWNED_TEXT}}
+
+    _consume_treasure(state, "elixir", 1)
+    state["elixir_buff"] = ELIXIR_BUFF_ROUNDS
+    rounds = ELIXIR_BUFF_ROUNDS
+    pct = int(ELIXIR_EFF_BUFF * 100)
+
+    return {
+        "ok": True,
+        "state": state,
+        "narrative": f"你将那枚灵丹纳入口中。丹田一热，药力散入四肢百骸，"
+                     f"往后 {rounds} 轮闭关与静养的进境都将快上 {pct}%。",
+        "choices": sanitize_last_choices(req.last_choices, state),
+        "delta_applied": {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
+                          "items_add": [], "items_remove": []},
+        "npc_events": [],   # 服丹不产生道缘变化，但字段必须与 /api/act 同构
+        "breakthrough": None, "near_death": False, "ending": False,
+        "engine_meta": {"source": "item", "model": "天道手书", "elapsed_ms": 6,
+                        "retries": 0, "tokens_in": 0, "tokens_out": 0,
+                        "elixir": {"buff": rounds, "eff": round(ELIXIR_EFF_BUFF, 3)}},
     }
 
 
@@ -1990,7 +2076,7 @@ def _mock_trial_scene(trial_text: str) -> dict | None:
             "narrative": body + "。是夜山风过林，涛声如潮，你将所授心法逐句推敲，"
                             "只觉数处旧日滞涩之处豁然贯通。（演武预演）",
             "choices": [
-                {"text": "趁悟性正热，就地行功一个周天", "risk": "mid", "tag": "cultivate"},
+                {"text": "趁悟性正热，就地行功一个周天", "risk": "mid", "tag": "cultivate", "short": True},
                 {"text": "以指为笔，将口诀默录于随身玉简", "risk": "low", "tag": "other"},
                 {"text": "下山寻访故人所说的那处灵穴", "risk": "high", "tag": "explore"},
             ],
@@ -2016,7 +2102,7 @@ MOCK_EVENTS = [
     {
         "narrative": "你寻了处山溪畔的青石盘膝坐下。溪水泠泠，远山如黛。行气一个周天，你忽觉丹田中那缕真元比往日活泼了几分——似是连日奔波，于红尘中磨出的定力反哺了修行。睁眼时日已西斜，衣上落了两片枯叶。",
         "choices": [
-            {"text": "趁热打铁，再行功一个周天", "risk": "mid", "tag": "cultivate"},
+            {"text": "趁热打铁，再行功一个周天", "risk": "mid", "tag": "cultivate", "short": True},
             {"text": "起身赶路，天黑前寻处人家", "risk": "low", "tag": "explore"},
             {"text": "掬溪水洗净风尘，细细思量前路", "risk": "low", "tag": "rest"},
         ],
@@ -2246,19 +2332,21 @@ def health():
 
 def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
                       action_tag: str = "other", risk_roll: float | None = None,
-                      tier: str | None = None):
+                      tier: str | None = None, short: bool = False):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
     action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。
     tier 为探索档位（low/mid/high），非探索行动忽略。
+    short 为「片刻行功」标记（周天/小坐），仅 cultivate 生效——见 §6 修复。
 
     修为结算改为「按天产出」（v2）：先掷本轮天数 → 修为 = 天数 × 日效率（+ 奇遇补正），
     再乘 灵根 × 连击 × 状态 × 闭门 × 风险 × 机缘效率。时间与修为同源，寿元才有意义。"""
     if action_tag == "explore" and tier not in EXPLORE_TIERS:
         tier = DEFAULT_EXPLORE_TIER
+    short = bool(short) and action_tag == "cultivate"    # 短修行只对 cultivate 有意义
     delta_applied = clamp_ai_delta(data.get("delta"), state)
     ai_exp = delta_applied["exp"]
-    day_exp, days, fortune = action_exp(action_tag, tier)
+    day_exp, days, fortune = action_exp(action_tag, tier, short)
     if ai_exp < 0:
         # AI 判定的修为折损（走火入魔、散功等）原样保留，不与时间产出对冲
         seclusion_hint = False
@@ -2280,6 +2368,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         detail["day_exp"] = round(day_exp, 1)
         detail["fortune"] = fortune
         detail["ai_exp"] = ai_exp
+        if short:
+            detail["short"] = True          # 片刻行功：告诉前端「这轮只过了一两天」
         if action_tag == "explore" and tier in EXPLORE_TIERS:
             detail["tier"] = tier
             detail["tier_label"] = EXPLORE_TIERS[tier]["label"]
@@ -2304,7 +2394,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         narrative = narrative + "\n\n" + NEAR_DEATH_TEXT
         memory_line = memory_line or "重伤濒死"
         near_death_flag = True
-    if seclusion_hint:
+    if seclusion_hint and not short:
+        # 短修行（周天/小坐）不算「闭门日久」，不必劝玩家出门
         narrative = narrative + "\n\n" + SECLUSION_HINT
 
     # ---- ⑤ 推进时间（本轮天数 → 年岁）----
@@ -2325,17 +2416,11 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         elif tspec["drop"] > 0 and random.random() < tspec["drop"]:
             key = roll_treasure(tier or DEFAULT_EXPLORE_TIER)   # 稀有件只有高风险档能出
             spec_t = TREASURE[key]
-            if key == "elixir":
-                lo_e, hi_e = spec_t["exp"]
-                gain = random.randint(lo_e, hi_e)
-                state["exp"] = clamp(state["exp"] + gain, 0, exp_max_of(state["realm_index"]))
-                delta_applied["exp"] += gain
-                meta["treasure"] = {"key": key, "name": spec_t["name"], "exp": gain}
-                memory_line = memory_line or f"得灵丹，修为骤增{gain}"
-            else:
-                if _add_treasure(state, key, 1) > 0:
-                    meta["treasure"] = {"key": key, "name": spec_t["name"], "qty": 1}
-                    memory_line = memory_line or f"得{spec_t['name']}"
+            # 所有机缘物件（**含灵丹**）统一入背包：灵丹不再即时加修为，
+            # 须由玩家主动服用（handle_use_elixir）才转化为限时效率 buff。
+            if _add_treasure(state, key, 1) > 0:
+                meta["treasure"] = {"key": key, "name": spec_t["name"], "qty": 1}
+                memory_line = memory_line or f"得{spec_t['name']}"
 
     # ---- ⑥ 静养续命：每 3 轮 rest 涨 3.5 岁，封顶为「基础寿元的 12%」----
     if action_tag == "rest" and not state.get("dead"):
@@ -2356,7 +2441,15 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     choices = normalize_choices(data.get("choices"), state)
     state["turn"] += 1
 
-    # ---- ⑦ 寿元判定：必须放在回合最末 ----
+    # ---- ⑦ 灵丹 buff 倒计时：只在「真正修行」的回合递减（探索回合不消耗）
+    # 否则反复出门探索即可无限续 buff，等于绕开闭关白拿效率。
+    if action_tag in TREASURE_EFF_TAGS:
+        _buf = _to_int(state.get("elixir_buff"), 0)
+        if _buf > 0:
+            state["elixir_buff"] = _buf - 1
+            meta["elixir_buff_left"] = state["elixir_buff"]
+
+    # ---- ⑧ 寿元判定：必须放在回合最末 ----
     lifespan_dead = (not state.get("dead")) and check_lifespan_death(state)
     if lifespan_dead:
         narrative = narrative + LIFESPAN_DEATH_TEXT
@@ -2467,6 +2560,9 @@ def act(req: ActReq):
         # ⓪ 用丹分支：纯代码裁决，不调 AI、不耗时序
         if action_type == "use_item":
             return handle_use_item(state, req)
+        # ⓪ 服灵丹（v3.1）：同样纯代码——灵丹只给限时效率 buff，不给裸修为
+        if action_type == "use_elixir":
+            return handle_use_elixir(state, req)
 
         # ⓪' 灵根觉醒：新档（或旧档升级）首次行动时由天道掷定
         root_newly = False
@@ -2490,10 +2586,11 @@ def act(req: ActReq):
         # ④ AI（或演武/兜底）生成剧情 ⑤~⑨ 后处理共用
         action_tag = infer_action_tag(action)
         tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
+        short = is_short_cultivate(action)                          # 片刻行功（周天/小坐）
         forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
         data, meta = generate_scene(state, action, trial_text, root_newly, forced_event)
         narrative, choices, delta_applied, near_death_flag, npc_events = \
-            _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier)
+            _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, short=short)
         _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
         return {
@@ -2540,6 +2637,15 @@ def act_stream(req: ActReq):
                 yield _sse("done", payload)
                 return
 
+            # ⓪ 服灵丹（v3.1）：同用丹，纯代码 + 本地切片流式
+            if action_type == "use_elixir":
+                payload = handle_use_elixir(state, req)
+                if payload.get("ok") and payload.get("narrative"):
+                    for piece in _slice_text(payload["narrative"]):
+                        yield _sse("delta", {"t": piece})
+                yield _sse("done", payload)
+                return
+
             # ⓪' 灵根觉醒
             root_newly = False
             if not state.get("spirit_root"):
@@ -2564,6 +2670,7 @@ def act_stream(req: ActReq):
                 breakthrough_view = apply_trial(state, trial)
                 action_tag = infer_action_tag(action)
                 tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
+                short = is_short_cultivate(action)                          # 片刻行功（周天/小坐）
                 forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
                 if API_KEY and _OPENAI_OK:
                     # ④ 流式真天道：边生成边推
@@ -2594,7 +2701,7 @@ def act_stream(req: ActReq):
 
             # ⑤~⑨ 与 /api/act 完全共用的后处理（action_tag 已在上方闭门判定处算好）
             narrative, choices, delta_applied, near_death_flag, npc_events = \
-                _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier)
+                _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, short=short)
             _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
             # 流式叙事是增量的，done 里带完整文本供前端静默校正

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""《墨问仙途》时间 / 寿元 / 探索系统 · 蒙特卡洛仿真校验（v3 配平 · P0 + P1）
+"""《墨问仙途》时间 / 寿元 / 探索系统 · 蒙特卡洛仿真校验（v3 配平 · P0 + P1 + v3.1 地基修复）
 
 对应《墨问仙途 下一版设计文档》的锚点：
     · 一次闭关均值 5 年（ACTION_DAYS["cultivate"] = (1260, 2340)，日效率 0.200）
@@ -7,6 +7,11 @@
     · 寿元：炼气 115~150 / 筑基 300~400；静养续命封顶 = 基础寿元的 12%
     · 探索三档 low(寻常走动) / mid(远行历练) / high(秘境探险)
     · 机缘物件：功法残卷/上古秘籍/仙家真诀 → 闭关效率；悟道石 → 突破率；护道符 → 免折损
+
+v3.1 地基修复（本版新增，见 changes 清单 §二）：
+    · FORTUNE_EXP 已清空 —— 奇遇不再即时给修为（非闭关行动脱离天数的 lump 全部砍掉）；
+    · 灵丹改为「限时闭关效率 buff」（12 轮 +15%），掉落入背包、由玩家主动服用。
+    仿真因此新增「贪心服丹」（持有即服），贴近真实玩法。
 
 设计意图：探险不是「用时间换寿元」，而是「用风险换效率」——
 纯闭关拿不到效率加成，探索流拿不到时间效率，两者必须取舍。
@@ -53,6 +58,12 @@ def fresh_state(seed_root: str = "三灵根·金木水") -> dict:
     return E.sanitize_state({"spirit_root": seed_root, "spirit_stones": 99999})
 
 
+class _Req:
+    """handle_use_elixir 只需要 last_choices（沿用上一轮选项），这里给个空壳。"""
+    action: dict = {}
+    last_choices = None
+
+
 def _breakthrough(s: dict) -> str:
     """冲关：掷骰（含灵根修正、连败保底、悟道石加成）。
     返回 'done'（踏入筑基）/ 'ok'（层内升）/ 'fail'。"""
@@ -68,11 +79,15 @@ def _breakthrough(s: dict) -> str:
 
 
 def run(strategy, max_turns: int = 4000) -> dict:
-    """跑一局：炼气一层 → 筑基初期。返回统计量。"""
+    """跑一局：炼气一层 → 筑基初期。返回统计量。
+
+    v3.1：灵丹已改为「限时效率 buff」且入背包，故这里模拟**贪心服用**——
+    持有即服（真实玩家的做法），buff 只在修行回合倒计时。
+    """
     s = fresh_state()
     dead = False
     turns = 0
-    fortunes = 0
+    elixirs = 0
     while turns < max_turns:
         if s.get("dead"):
             dead = True
@@ -90,8 +105,11 @@ def run(strategy, max_turns: int = 4000) -> dict:
         E._postprocess_turn(
             s, {"delta": {"exp": 0}, "choices": [], "narrative": "n", "memory": ""},
             meta, "行动", tag, risk_roll=0.0, tier=tier)
-        if meta.get("cultivate", {}).get("fortune"):
-            fortunes += 1
+        # 贪心服丹：持有即服（只开限时效率 buff，不给裸修为）
+        while (s.get("treasures") or {}).get("elixir"):
+            if not E.handle_use_elixir(s, _Req()).get("ok"):
+                break
+            elixirs += 1
     treasures = sum((s.get("treasures") or {}).values())
     return {
         "turns": turns,
@@ -99,7 +117,7 @@ def run(strategy, max_turns: int = 4000) -> dict:
         "dead": dead or bool(s.get("dead")),
         "lifespan": s["lifespan"],
         "ratio": s["age"] / max(E.LIFESPAN_TABLE[0][1], 1),
-        "fortunes": fortunes,
+        "elixirs": elixirs,
         "treasures": treasures,
         "eff_bonus": E.treasure_eff_bonus(s.get("treasures")),
         "realm": s["realm_index"],
@@ -120,7 +138,7 @@ def main() -> int:
           f"　安全线 {int(E.LIFESPAN_SAFE_RATIO * 100)}%　续命封顶 {E.REST_LIFE_BONUS_CAP:.0%}")
     print(f"每组 {n} 次\n")
     head = (f"{'策略':<16}{'轮数':>7}{'终局年龄':>9}{'死亡率':>8}"
-            f"{'占寿元':>8}{'奇遇':>6}{'物件':>6}{'效率':>7}{'入筑基':>8}")
+            f"{'占寿元':>8}{'服丹':>6}{'物件':>6}{'效率':>7}{'入筑基':>8}")
     print(head)
     print("-" * len(head))
     for name, fn in STRATEGIES.items():
@@ -129,7 +147,7 @@ def main() -> int:
         death = sum(1 for r in rs if r["dead"]) / n * 100
         win = sum(1 for r in rs if r["won"]) / n * 100
         print(f"{name:<16}{avg('turns'):>7.0f}{avg('age'):>9.0f}{death:>7.1f}%"
-              f"{avg('ratio') * 100:>7.0f}%{avg('fortunes'):>6.1f}"
+              f"{avg('ratio') * 100:>7.0f}%{avg('elixirs'):>6.1f}"
               f"{avg('treasures'):>6.1f}{avg('eff_bonus') * 100:>6.0f}%{win:>7.0f}%")
     print()
     print("死亡风险曲线（每轮，按炼气均寿元）：")

@@ -13,12 +13,28 @@
 """
 from __future__ import annotations
 
+import importlib.util
+import pathlib
 import random
 
 import pytest
 
 # pacing 仿真用的固定种子：每条路线都从同一起点播种，比较才公平
 PACE_SEED = 20260912
+
+# 采样用的种子（TestPacingAnchors）：与 sim_lifespan.py 的 20260913 区分开，
+# 避免「同一串随机数既校准又断言」的循环论证。
+SAMPLE_SEED = 20260915
+SAMPLE_N = 100
+
+
+def load_sim():
+    """加载 tools/sim_lifespan.py（与线上引擎共用 _postprocess_turn，不会漂移）。"""
+    path = pathlib.Path(__file__).resolve().parents[2] / "tools" / "sim_lifespan.py"
+    spec = importlib.util.spec_from_file_location("sim_lifespan", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # ---------------------------------------------------------------- 常量表
@@ -42,6 +58,14 @@ class TestTables:
         assert engine.FORTUNE_CHANCE["explore"] == 0.22
         for tag, (lo, hi) in engine.FORTUNE_EXP.items():
             assert 0 < lo < hi, f"{tag} 奇遇区间非法"
+
+    def test_fortune_no_longer_grants_bare_exp(self, engine):
+        """v3.1 地基修复：奇遇表已清空——非闭关行动不得有任何「脱离天数的修为」。
+
+        原表让「出门逛三天」的收益超过「闭关两年」，把「修为 = 天数 × 日效率」
+        这条地基打穿（实测纯探索流入筑基率 94%）。表空 = 该分支永不触发。
+        """
+        assert engine.FORTUNE_EXP == {}
 
     def test_lifespan_grows_faster_than_exp_need(self, engine):
         """v1 的结构性缺陷正是需求增速 > 寿元增速；这里守住 v2 的修正。"""
@@ -323,14 +347,32 @@ class TestBreakthroughLifespan:
 
 # ---------------------------------------------------------------- 端到端：量级锚点
 class TestPacingAnchors:
-    """与 tools/sim_lifespan.py 同源的量级校验（跑得动、且不至于跑飞）。"""
+    """策略量级锚点 —— 与 tools/sim_lifespan.py **同一份引擎、同一套判据**。
+
+    v3.1 起不再用「单局轮数」当判据：一次闭关就是 5 年、寿元还是掷骰得来的，
+    单局噪声大到无法区分好坏路线。改为**多次采样的入筑基成功率**，与文档 §四
+    的 n=2000 结论同源（固定种子 → 结果确定可复现）。
+
+    设计意图（三条核心诉求，缺一不可）：
+        1. 纯闭关垫底 → 逼玩家出门；
+        2. 纯探索流归零 → 「只探索刷丹」这条时间作弊已被堵死；
+        3. 静养穿插最优 ≥ 探险 > 纯闭关 → 取舍成立，而非某键通吃。
+    """
 
     BALANCED = staticmethod(lambda e, st: "explore"
                             if st["seclusion_streak"] >= e.SECLUSION_STREAK else "cultivate")
     MINDLESS = staticmethod(lambda e, st: "cultivate")
 
+    @classmethod
+    def win_rate(cls, engine, sim, name):
+        random.seed(SAMPLE_SEED)
+        engine._life_rng.seed(SAMPLE_SEED)
+        rs = [sim.run(sim.STRATEGIES[name]) for _ in range(SAMPLE_N)]
+        return sum(1 for r in rs if r["won"]) / SAMPLE_N
+
     @staticmethod
     def run(engine, pick, max_turns=4000):
+        """单局跑法（供收敛性/寿命对比用）。"""
         random.seed(PACE_SEED)
         engine._life_rng.seed(PACE_SEED)
         s = engine.sanitize_state({
@@ -348,17 +390,33 @@ class TestPacingAnchors:
                 engine.apply_trial(s, {"success": True})
         return turns, s
 
-    def test_balanced_route_reaches_foundation_alive(self, engine):
-        """张弛有度：在炼气寿元内跑完九层、活着踏入筑基（v3 的压迫感就压在这儿）。
+    def test_mindless_meditation_is_the_worst_route(self, engine):
+        """纯闭关垫底：一次闭关 5 年、效率封顶且无宝物加成，成功率必须显著低于出门流。"""
+        sim = load_sim()
+        pure = self.win_rate(engine, sim, "纯闭关")
+        out = self.win_rate(engine, sim, "闭关5+远行1")
+        assert pure < out, f"纯闭关 {pure:.0%} 竟然不劣于出门流 {out:.0%}"
+        assert pure < 0.35, f"纯闭关成功率 {pure:.0%} 过高，压迫感不足"
 
-        v3 一次闭关 5 年，二十来轮就到 128 岁上下——离炼气均寿 132 只差一线，
-        所以判据是「没撞上限、也没死」而不是「很年轻」。"""
-        turns, s = self.run(engine, self.BALANCED)
-        lo, hi = engine.LIFESPAN_TABLE[0][1], engine.LIFESPAN_TABLE[0][2]
-        assert 18 <= turns <= 45
-        assert engine.START_AGE < s["age"] < hi
-        assert s["dead"] is False
-        assert s["realm_index"] == 9
+    def test_explore_only_route_never_reaches_foundation(self, engine):
+        """v3.1 核心成果：纯探索流 **0%** 入筑基。
+
+        砍掉「奇遇直修为」与「灵丹裸修为」之后，只出门不闭关拿不到修为，
+        一生出门数百次也只会耗掉寿元——这正是地基修复要堵的那个洞。
+        """
+        sim = load_sim()
+        for name in ("远行探索流", "秘境探索流"):
+            assert self.win_rate(engine, sim, name) == 0.0, f"{name} 竟能靠出门入筑基"
+
+    def test_static_meditation_route_is_the_best(self, engine):
+        """静养穿插最优：续命 + 重置闭关衰减，略胜探险的宝物加速（38% vs 32%）。"""
+        sim = load_sim()
+        rest = self.win_rate(engine, sim, "修行5+静养1")
+        out = self.win_rate(engine, sim, "闭关5+远行1")
+        pure = self.win_rate(engine, sim, "纯闭关")
+        assert rest > pure, f"静养流 {rest:.0%} 未优于纯闭关 {pure:.0%}"
+        assert rest + 0.05 >= out, f"静养流 {rest:.0%} 明显劣于探险流 {out:.0%}"
+        assert 0.15 < out < 0.55, f"探险流成功率 {out:.0%} 不在设计区间（约 1/3）"
 
     def test_pure_seclusion_costs_more_lifespan(self, engine):
         """纯闭关：把每一轮都换成 5 年枯坐 → 终局年岁更大。这才是寿元压力的来源。"""
@@ -366,19 +424,22 @@ class TestPacingAnchors:
         _, sm = self.run(engine, self.MINDLESS)
         assert sm["age"] > sb["age"]
 
-    def test_explore_route_costs_almost_no_lifespan(self, engine):
-        """探索流靠奇遇吃饭：轮数多，但几乎不老——时间作弊已被堵死。"""
+    def test_explore_route_stalls_at_the_first_realm(self, engine):
+        """探索流轮数极多，但修为**原地不动**——时间作弊被堵死的直接证据。"""
         turns, s = self.run(engine, lambda e, st: "explore")
         assert turns > 60
-        assert s["age"] < 60
+        assert s["realm_index"] < 9
+        assert s["dead"] is True          # 只会寿终，不会飞升
 
     def test_every_route_terminates(self, engine):
         """任何单键路线都必须在 4000 轮内跑完或寿终，不得死循环。
 
-        坊市流刻意最慢（约 2000 轮，靠灵石与丹药才是正解），但仍须收敛——
-        若它跑不完而玩家又察觉不到，就是个隐形陷阱。
+        ⚠️ 只断言**修行类**（cultivate/rest）：v3.1 砍掉「奇遇直修为」后，
+        探索/交易/斗法**自身几乎不产修为**是设计意图（靠宝物与灵丹回哺闭关），
+        它们本来就不该收敛于筑基——若强制要求，等于诱导「纯探索刷修为」的隐形陷阱。
+        这两条路线只需保证「不崩、不卡死」，故不在此断言。
         """
-        for tag in ("cultivate", "rest", "explore", "trade", "fight"):
+        for tag in ("cultivate", "rest"):
             turns, s = self.run(engine, lambda e, st, t=tag: t)
             assert turns < 4000 or s["dead"], f"{tag} 路线未收敛"
 

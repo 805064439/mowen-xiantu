@@ -48,6 +48,19 @@ const treasureList = computed(() =>
 const effBonusPct = computed(() => Math.round(treasureEffBonus(game.state?.treasures) * 100));
 const breakBonusPct = computed(() => Math.round(treasureBreakBonus(game.state?.treasures) * 100));
 
+/* 灵丹：服下只给限时效率 buff（不凭空长修为），所以必须由玩家主动点，
+   并且把「还剩几轮」摆在明面上——否则这枚丹等于进了背包就消失。 */
+const elixirQty = computed(() => game.state?.treasures?.elixir ?? 0);
+const elixirBuff = computed(() => game.state?.elixir_buff ?? 0);
+const elixirPct = computed(() => Math.round((TREASURE_INFO.elixir.effBuff ?? 0) * 100));
+const elixirTitle = computed(() =>
+  `服下灵丹：往后 ${TREASURE_INFO.elixir.buffRounds ?? 12} 轮闭关与静养效率 +${elixirPct.value}%`
+  + "（只在修行回合倒计时，探索不消耗）");
+function useElixir() {
+  if (game.loading || game.inputLocked) return;
+  actions.act({ type: "use_elixir" });
+}
+
 /* 年岁 / 寿元：寿元是本作唯一会「越用越少」的资源，必须常驻可见；
    但只给分级提示，不暴露精确死亡率——玩家该感到压迫，而不是看着数字算概率。 */
 const age = computed(() => game.state?.age ?? 16);
@@ -143,7 +156,7 @@ function openDrawer() {
       <span class="cult-risk risk-bad" v-else-if="lastRisk === '事与愿违'">事与愿违</span>
     </div>
 
-    <div class="stat-treasure" v-if="treasureList.length">
+    <div class="stat-treasure" v-if="treasureList.length || elixirBuff > 0">
       <span class="tre-label">机 缘</span>
       <template v-for="t in treasureList" :key="t.key">
         <span class="tre-chip" :class="{ prot: t.prot }" :title="t.desc">
@@ -152,6 +165,14 @@ function openDrawer() {
       </template>
       <span class="tre-bonus" v-if="effBonusPct > 0" title="功法加成：只作用于闭关与静养">闭关 +{{ effBonusPct }}%</span>
       <span class="tre-bonus tre-break" v-if="breakBonusPct > 0" title="悟道石加成：提升冲关成功率">冲关 +{{ breakBonusPct }}%</span>
+      <button v-if="elixirQty > 0" type="button" class="tre-use" :title="elixirTitle"
+              :disabled="game.loading || game.inputLocked" @click="useElixir">
+        服灵丹<template v-if="elixirQty > 1">×{{ elixirQty }}</template>
+      </button>
+      <span class="tre-bonus tre-buff" v-if="elixirBuff > 0"
+            :title="`灵丹丹力未散：剩余 ${elixirBuff} 轮修行享有 +${elixirPct}% 效率`">
+        丹力 · 余{{ elixirBuff }}轮 +{{ elixirPct }}%
+      </span>
     </div>
 
     <div class="stat-foot">

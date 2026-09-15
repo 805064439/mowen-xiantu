@@ -46,6 +46,7 @@ export interface GameState {
   treasures?: Record<string, number>;  // {"residual_scroll": 3, "guard_talisman": 1, ...}
   eff_bonus?: number;                  // 闭关效率加成（由 treasures 派生）
   break_bonus?: number;                // 突破成功率加成（由 treasures 派生）
+  elixir_buff?: number;                // 灵丹限时 buff 剩余轮数（服丹后 12 轮）
 }
 
 /** 寿元信息（engine_meta.age）——状态栏直接渲染 */
@@ -86,6 +87,7 @@ export interface Choice {
   tag?: string;
   special?: string;
   hint?: string;   // 附带提示（如冲关成功率）
+  short?: boolean; // 片刻行功（周天/小坐）：1~7 天，而非整段闭关的五年
 }
 
 export interface DeltaApplied {
@@ -117,7 +119,9 @@ export interface CultivateInfo {
   fortune?: boolean;     // 本轮是否触发奇遇
   ai_exp?: number;       // AI 提议的修为（仅叙事参考，权重 0 时不入账）
   eff?: number;          // 机缘效率乘数（1.0 = 无加成）
-  eff_bonus?: number;    // 机缘效率加成（功法/秘籍/真诀）
+  eff_bonus?: number;    // 机缘效率加成（功法/秘籍/真诀 + 灵丹 buff）
+  elixir_buff?: number;  // 灵丹 buff 剩余轮数（0 = 未服丹）
+  short?: boolean;       // 本轮是否为「片刻行功」（只过了一两天，不是五年）
   tier?: string;         // 探索档位（low/mid/high，仅 explore）
   tier_label?: string;   // 探索档位中文名（寻常走动/远行历练/秘境探险）
 }
@@ -144,9 +148,11 @@ export interface EngineMeta {
   age?: AgeInfo;               // 本轮年岁/寿元/风险分级
   life_extended?: number;      // 本轮静养续命增加的寿元
   lifespan_death?: boolean;    // 本轮寿终
-  treasure?: { key: string; name: string; qty?: number; exp?: number };  // 本轮探索所得机缘
+  treasure?: { key: string; name: string; qty?: number };  // 本轮探索所得机缘（一律入背包）
   explore?: { tier: string; label: string };   // 本轮探索档位
   explore_death?: boolean;     // 本轮探索陨落
+  elixir?: { buff: number; eff: number };      // 本轮服丹：buff 轮数与效率加成
+  elixir_buff_left?: number;   // 回合末灵丹 buff 剩余轮数
 }
 
 export interface ActResponse {
@@ -171,13 +177,14 @@ export interface NpcEvent {
 }
 
 export interface GameAction {
-  type: "choice" | "breakthrough" | "custom" | "use_item" | "shop_buy" | "shop_sell";
+  type: "choice" | "breakthrough" | "custom" | "use_item" | "use_elixir" | "shop_buy" | "shop_sell";
   id?: string;
   text?: string;
   name?: string;
   qty?: number;  // 坊市买卖数量
   tag?: string;  // 选项标签（fight → 后端掷斗法判定）
   risk?: Risk;   // 风险档（explore 时即探索档位：low/mid/high）
+  short?: boolean;  // 片刻行功标记（周天/小坐）：不传则后端一次吃五年
 }
 
 /** 叙事区的一个段落（一段剧情） */

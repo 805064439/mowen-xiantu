@@ -18,9 +18,10 @@ import pytest
 def _scripted(monkeypatch, engine, randints=(), randoms=()):
     """按脚本喂随机流：randint / random 各消费一个序列，耗尽后回落到安全默认值。
 
-    顺序对应 _postprocess_turn 内部真实的调用次序：
-        ① action_exp 的 randint(days)  ② action_exp 的 fortune 判定
-        ③ 探索死亡判定  ④ 探索掉落判定  ⑤ roll_treasure 的权重掷点
+    顺序对应 _postprocess_turn 内部真实的调用次序（v3.1 起奇遇已不再消耗随机流，
+    因为 FORTUNE_EXP 为空、该分支整体不触发）：
+        ① action_exp 的 randint(days)
+        ② 探索死亡判定  ③ 探索掉落判定  ④ roll_treasure 的权重掷点
     """
     it_i, it_f = iter(randints), iter(randoms)
     monkeypatch.setattr(engine.random, "randint", lambda a, b: next(it_i, a))
@@ -153,7 +154,10 @@ class TestTreasureBonuses:
         for key, spec in engine.TREASURE.items():
             assert spec["name"] and spec["w"] > 0
             assert set(("eff", "bp", "prot", "rare")) <= set(spec)
-        assert engine.TREASURE["elixir"]["exp"][0] < engine.TREASURE["elixir"]["exp"][1]
+        # v3.1：灵丹不再是裸修为，而是限时效率 buff
+        assert "exp" not in engine.TREASURE["elixir"]
+        assert engine.TREASURE["elixir"]["eff_buff"] > 0
+        assert engine.TREASURE["elixir"]["buff_rounds"] > 0
 
 
 # ---------------------------------------------------------------- 背包增减
@@ -236,37 +240,92 @@ class TestExploreSettlement:
     def test_drop_stores_treasure_and_marks_meta(self, engine, base_state, monkeypatch):
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
         meta: dict = {}
-        # ① 天数 30 ② 奇遇不中 ③ 不死 ④ 掉落命中 ⑤ 权重掷点 0.0 → 池中第一件（功法残卷）
-        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.99, 0.0, 0.0])
+        # ① 天数 30 ② 不死 ③ 掉落命中 ④ 权重掷点 0.0 → 池中第一件（功法残卷）
+        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.0, 0.0])
         _explore(engine, s, meta, tier="mid")
         assert meta["treasure"]["key"] == "residual_scroll"
         assert s["treasures"]["residual_scroll"] == 1
         assert meta["explore"]["tier"] == "mid"
         assert meta["explore"]["label"]
 
-    def test_elixir_grants_immediate_exp(self, engine, base_state, monkeypatch):
-        """灵丹是唯一直接给修为的机缘——服下即涨，不占修行轮次。"""
+    def test_elixir_stored_in_inventory_not_immediate(self, engine, base_state, monkeypatch):
+        """v3.1：探索掉到的灵丹**入背包**，不再即时加修为。
+
+        灵丹的旧设计（掉落即 +150~600 修为）让「只探索刷丹再服用」成为时间作弊，
+        实测纯探索流可飙到 90% 入筑基、年仅 29 岁。现在它必须先入包、再由玩家主动服用。
+        """
         s = engine.sanitize_state({**base_state, "spirit_stones": 999, "realm_index": 8})
         meta: dict = {}
         # 掉落命中后，权重掷点 0.5 × 96 = 48 → 落在灵丹区间 [42, 62)
-        _scripted(monkeypatch, engine, randints=[30, 400], randoms=[0.99, 0.99, 0.0, 0.5])
+        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.0, 0.5])
         _explore(engine, s, meta, tier="mid")
         assert meta["treasure"]["key"] == "elixir"
-        assert meta["treasure"]["exp"] == 400
-        assert s["exp"] == 400
-        assert "elixir" not in s["treasures"]           # 灵丹即时消化，不入背包
+        assert "exp" not in meta["treasure"]            # meta 不再回传即时修为
+        assert s["exp"] == 0                            # 修为一动不动
+        assert s["treasures"]["elixir"] == 1            # 进背包，等玩家自己服
 
-    def test_elixir_never_overflows_the_ceiling(self, engine, base_state, monkeypatch):
-        s = engine.sanitize_state({**base_state, "spirit_stones": 999})   # 炼气一层，上限 135
-        meta: dict = {}
-        _scripted(monkeypatch, engine, randints=[30, 600], randoms=[0.99, 0.99, 0.0, 0.5])
-        _explore(engine, s, meta, tier="mid")
-        assert s["exp"] == engine.exp_max_of(0)
+    def test_elixir_use_grants_efficiency_buff(self, engine, base_state, monkeypatch):
+        """主动服用灵丹：修为不变，改为开启限时效率 buff。
+
+        这是「修为 = 天数 × 效率」的直接体现——丹只让后面的闭关跑得更快，
+        绝不凭空多出修为；且纯探索（不闭关）时 buff 毫无收益。
+        """
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999,
+                                   "treasures": {"elixir": 2}})
+        req = type("Req", (), {"action": {}, "last_choices": None, "state": {}})()
+        payload = engine.handle_use_elixir(s, req)
+        assert payload["ok"] is True
+        assert s["exp"] == 0                                       # 不给裸修为
+        assert s["elixir_buff"] == engine.TREASURE["elixir"]["buff_rounds"]
+        assert s["treasures"]["elixir"] == 1                       # 只消耗一颗
+        assert payload["delta_applied"]["exp"] == 0
+
+        # buff 真的进了乘子，且只作用于修行类
+        _, dc = engine.cultivate_multiplier(s, "cultivate")
+        _, dr = engine.cultivate_multiplier(s, "rest")
+        _, de = engine.cultivate_multiplier(s, "explore")
+        assert dc["eff"] == pytest.approx(1.0 + engine.ELIXIR_EFF_BUFF)
+        assert dr["eff"] == pytest.approx(1.0 + engine.ELIXIR_EFF_BUFF)
+        assert de["eff"] == pytest.approx(1.0)                     # 探索不享受丹力
+
+    def test_elixir_use_without_ownership_is_rejected(self, engine, base_state):
+        s = engine.sanitize_state({**base_state})
+        req = type("Req", (), {"action": {}, "last_choices": None, "state": {}})()
+        payload = engine.handle_use_elixir(s, req)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "ELIXIR_NOT_OWNED"
+        assert s["elixir_buff"] == 0
+
+    def test_elixir_buff_ticks_only_while_cultivating(self, engine, base_state, monkeypatch):
+        """buff 只在修行回合倒计时：否则反复出门探索即可无限续杯。"""
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999,
+                                   "treasures": {"elixir": 1}, "realm_index": 8})
+        engine.handle_use_elixir(s, type("Req", (), {"action": {}, "last_choices": None})())
+        rounds = engine.ELIXIR_BUFF_ROUNDS
+
+        # 探索一轮：buff 不递减
+        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.99])
+        _explore(engine, s, {}, tier="mid")
+        assert s["elixir_buff"] == rounds
+
+        # 闭关一轮：递减 1
+        _scripted(monkeypatch, engine, randints=[engine.ACTION_DAYS["cultivate"][0]])
+        engine._postprocess_turn(
+            s, {"delta": {"exp": 0}, "choices": [], "narrative": "n", "memory": ""},
+            {}, "闭关", "cultivate")
+        assert s["elixir_buff"] == rounds - 1
+
+    def test_elixir_buff_is_clamped_by_whitelist(self, engine):
+        """存档里塞 9999 轮 → 钳到上限，防注入。"""
+        s = engine.sanitize_state({"elixir_buff": 9999})
+        assert s["elixir_buff"] == engine.ELIXIR_BUFF_ROUNDS
+        assert engine.sanitize_state({"elixir_buff": -5})["elixir_buff"] == 0
+        assert engine.sanitize_state({"elixir_buff": "x"})["elixir_buff"] == 0
 
     def test_no_drop_when_roll_misses(self, engine, base_state, monkeypatch):
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
         meta: dict = {}
-        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.99, 0.99])   # 掉落不中
+        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.99])   # 掉落不中
         _explore(engine, s, meta, tier="mid")
         assert "treasure" not in meta
         assert s["treasures"] == {}
@@ -282,8 +341,8 @@ class TestExploreSettlement:
     def test_explore_death_kills_and_narrates(self, engine, base_state, monkeypatch):
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
         meta: dict = {}
-        # ① 天数 ② 奇遇不中 ③ 死亡判定命中
-        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.0])
+        # ① 天数 ② 死亡判定命中
+        _scripted(monkeypatch, engine, randints=[30], randoms=[0.0])
         narrative, _, _, _, _ = _explore(engine, s, meta, tier="mid")
         assert s["dead"] is True
         assert meta["explore_death"] is True
@@ -310,6 +369,21 @@ class TestExploreSettlement:
             {}, "闭关", "cultivate")
         assert delta["exp"] > 0
 
+    @pytest.mark.parametrize("tier", ["low", "mid", "high"])
+    def test_explore_yields_no_measurable_exp(self, engine, base_state, monkeypatch, tier):
+        """v3.1 地基的核心保证：**非闭关行动不得产出可观修为**。
+
+        探索的按天产出 = 天数 × DAY_EFF["explore"]（0.004），最高档 160 天也只有 0.64——
+        取整后恒为 0。过去「奇遇直修为」与「灵丹裸修为」正是从这里把地基打穿的。
+        """
+        s = engine.sanitize_state({**base_state, "spirit_stones": 999, "realm_index": 8})
+        meta: dict = {}
+        _scripted(monkeypatch, engine,
+                  randints=[engine.EXPLORE_TIERS[tier]["days"][1]], randoms=[0.99, 0.99])
+        _, _, delta, _, _ = _explore(engine, s, meta, tier=tier)
+        assert delta["exp"] == 0, f"{tier} 档探索产出了修为 {delta['exp']}"
+        assert s["exp"] == 0
+
 
 # ---------------------------------------------------------------- 白名单与派生字段
 class TestTreasureSanitize:
@@ -318,6 +392,7 @@ class TestTreasureSanitize:
         assert s["treasures"] == {}
         assert s["eff_bonus"] == 0.0
         assert s["break_bonus"] == 0.0
+        assert s["elixir_buff"] == 0
 
     def test_whitelist_drops_unknown_keys(self, engine):
         s = engine.sanitize_state({"treasures": {"residual_scroll": 1, "作弊钥匙": 99,
@@ -353,7 +428,7 @@ class TestExploreDeathThroughApi:
         }
 
     def test_act_reports_explore_death(self, engine, client, monkeypatch):
-        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.0])
+        _scripted(monkeypatch, engine, randints=[30], randoms=[0.0])
         r = client.post("/api/act", json={
             "state": self._live_state(engine),
             "action": {"type": "choice", "text": "深入荒泽秘境", "tag": "explore", "risk": "mid"},
@@ -366,7 +441,7 @@ class TestExploreDeathThroughApi:
         assert d["engine_meta"]["explore_death"] is True
 
     def test_act_keeps_treasure_after_drop(self, engine, client, monkeypatch):
-        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.99, 0.0, 0.0])
+        _scripted(monkeypatch, engine, randints=[30], randoms=[0.99, 0.0, 0.0])
         r = client.post("/api/act", json={
             "state": self._live_state(engine),
             "action": {"type": "choice", "text": "远行历练", "tag": "explore", "risk": "mid"},
@@ -375,3 +450,25 @@ class TestExploreDeathThroughApi:
         assert d["dead"] is False
         assert d["state"]["treasures"].get("residual_scroll") == 1
         assert d["engine_meta"]["treasure"]["name"] == "功法残卷"
+
+    def test_act_routes_use_elixir(self, engine, client):
+        """服灵丹走独立纯代码动作：不调 LLM、不给裸修为、只开 buff。"""
+        s = self._live_state(engine)
+        s["realm_index"] = 8
+        s["treasures"] = {"elixir": 1}
+        r = client.post("/api/act", json={"state": s, "action": {"type": "use_elixir"}})
+        assert r.status_code == 200
+        d = r.json()
+        assert d["ok"] is True
+        assert d["state"]["elixir_buff"] == engine.ELIXIR_BUFF_ROUNDS
+        assert d["state"]["treasures"] == {}
+        assert d["delta_applied"]["exp"] == 0
+        assert d["engine_meta"]["source"] == "item"
+        assert d["engine_meta"]["elixir"]["eff"] == pytest.approx(engine.ELIXIR_EFF_BUFF)
+
+    def test_act_use_elixir_without_one_errors(self, engine, client):
+        r = client.post("/api/act", json={
+            "state": self._live_state(engine), "action": {"type": "use_elixir"}})
+        d = r.json()
+        assert d["ok"] is False
+        assert d["error"]["code"] == "ELIXIR_NOT_OWNED"
