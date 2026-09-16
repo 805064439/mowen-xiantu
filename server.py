@@ -1687,8 +1687,16 @@ def normalize_choices(raw: Any, state: dict) -> list:
             sp = str(c.get("span") or "").strip().lower()
             if sp in CULTIVATE_SPAN:
                 item["span"] = sp
-            if c.get("short"):
+            elif c.get("short"):
                 item["short"] = True
+            else:
+                # 修复（2026-09-16 线上复现）：LLM 漏给 span 时按文字关键词推断并固化进选项，
+                # 否则前端 actionSpanHint 默认按 long 渲染「约5年」，与后端实际推进的片刻脱节——
+                # 玩家点了「周天」却看到「五年」的承诺。后端是唯一时间权威，且判定与
+                # span_of_cultivate 同源，绝不复制关键词表，杜绝日后再次漂移。
+                inferred = span_of_cultivate({"text": text, "tag": tag})
+                if inferred:
+                    item["span"] = inferred
             out.append(item)
     while len(out) < 3:
         out.append({"id": "ABC"[len(out)], **random.choice(filler_choices(state))})
@@ -1739,6 +1747,8 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
    - "long"：整段闭关（闭关苦修、长年参悟、不问寒暑）→ 一次跨数年
    **span 必须与选项文字的时间暗示严格一致**——写着「行功一个周天」却给 span=long，
    玩家点一下会被推进整整五年，这是严重的叙事与机制脱节。
+   **每个 cultivate 选项都必须显式给出 span 字段**：若遗漏，系统将按选项文字自行推断时长，
+   推断未必贴合你的叙事，故请主动标注，莫让系统替你定夺时间。
    另须遵守【场景节奏】（见玩家状态末尾）：
    - action（事件进行中）：**禁止**给出 span=long 的整段闭关——正置身事外者不会忽然闭关数年；
      给 short / medium，或 explore / fight 等推进事件的选项。

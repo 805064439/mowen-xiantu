@@ -168,9 +168,37 @@ class TestSpanPlumbing:
         assert [c.get("span") for c in out] == ["short", "medium", "long"]
 
     def test_normalize_choices_drops_illegal_span(self, engine, base_state):
+        """非法/注入 span 不得透传：丢弃后改由文字推断合法 span（而非留空）。"""
         raw = [{"text": "闭关苦修", "risk": "low", "tag": "cultivate", "span": "HACK"}]
         out = engine.normalize_choices(raw, base_state)
-        assert "span" not in out[0]
+        assert out[0]["span"] in engine.CULTIVATE_SPAN      # HACK 已被丢弃
+        assert out[0]["span"] == engine.span_of_cultivate(
+            {"text": "闭关苦修", "tag": "cultivate"})        # 与推断结果一致
+
+    def test_normalize_choices_infers_missing_span_from_text(self, engine, base_state):
+        """2026-09-16 线上 bug 修复：LLM 漏给 span 时按文字关键词推断并固化，
+
+        前端才不会默认渲染「约5年」、与后端实际推进的片刻脱节。
+        首轮「行功一个周天」曾经被标成 5 年、点下去只过片刻——本测试锁死不再复现。
+        """
+        raw = [
+            {"text": "行功一个周天", "risk": "mid", "tag": "cultivate"},       # 漏给 span
+            {"text": "静修数月", "risk": "low", "tag": "cultivate"},          # 漏给 span
+            {"text": "下山游历，探听消息", "risk": "low", "tag": "explore"},    # 非修行
+        ]
+        out = engine.normalize_choices(raw, base_state)
+        assert out[0].get("span") == "short"
+        assert out[1].get("span") == "medium"
+        assert "span" not in out[2]      # 非 cultivate 不掺 span
+
+    def test_normalize_never_overrides_explicit_span(self, engine, base_state):
+        """风味铁律：LLM 显式给的 span 永远优先——推断只补漏、绝不覆盖 AI 意图。
+
+        即便文字像 short（「周天」），只要 LLM 明写 span=long，就以 long 为准。
+        """
+        raw = [{"text": "行功一个周天", "risk": "mid", "tag": "cultivate", "span": "long"}]
+        out = engine.normalize_choices(raw, base_state)
+        assert out[0].get("span") == "long"
 
     def test_sanitize_last_choices_preserves_span(self, engine, base_state):
         """用丹后沿用上一轮选项，粒度必须跟着回来。"""
