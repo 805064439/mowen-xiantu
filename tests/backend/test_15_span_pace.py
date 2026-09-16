@@ -141,6 +141,16 @@ class TestSpanDetection:
             assert engine.span_of_cultivate(
                 {"text": text, "tag": "cultivate"}) == "medium", text
 
+    def test_jingxiu_five_years_is_real_long_not_moment(self, engine):
+        """v3.2.3 回归：纯文本「静修五载」既要判 cultivate，又要判 long。
+
+        此前 infer_action_tag 不认「静修」，把该选项降级成 other，span 逻辑不触发，
+        只过 ~15 天（顷刻）——玩家点「5年」选项却只过片刻。线上实测复现。
+        这里不传 tag，走真实关键词兜底路径。
+        """
+        assert engine.infer_action_tag({"text": "静修五载"}) == "cultivate"
+        assert engine.span_of_cultivate({"text": "静修五载"}) == "long"
+
     def test_legacy_short_bool_is_honoured(self, engine):
         assert engine.span_of_cultivate(
             {"text": "闭关苦修", "tag": "cultivate", "short": True}) == "short"

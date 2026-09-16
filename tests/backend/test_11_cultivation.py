@@ -89,6 +89,12 @@ class TestInferActionTag:
         ({"tag": "", "text": "沉吟片刻"}, "other"),
         ({"tag": "breakthrough", "text": "闭关，冲击炼气二层"}, "breakthrough"),  # 冲关 tag 保留
         ({"tag": "", "text": "闭关修炼"}, "cultivate"),                # "闭关"非冲关时算修行
+        # ↓ v3.2.3 修复：span 表认的修行词，标签表也必须认，否则降级成 other 只过片刻
+        ({"tag": "", "text": "静修五载"}, "cultivate"),
+        ({"tag": "", "text": "潜修三载不出"}, "cultivate"),
+        ({"tag": "", "text": "运转周天"}, "cultivate"),
+        ({"tag": "", "text": "闭关潜修半载"}, "cultivate"),
+        ({"tag": "", "text": "入定参悟"}, "cultivate"),
         ("not a dict", "other"),
         (None, "other"),
     ])
