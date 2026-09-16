@@ -25,7 +25,10 @@ export const OPENING =
 
 export const INIT_CHOICES = [
   { id: "A", text: "下山，赶往青牛镇", risk: "mid", tag: "explore" },
-  { id: "B", text: "在破庙再打坐半日，巩固境界", risk: "low", tag: "cultivate" },
+  // 文字明写「半日」→ 必须显式标 short，否则会落到 DEFAULT_CULTIVATE_SPAN=long，
+  // 界面显示「约5年」而实际只过片刻（v3.2.4 修复：开局选项绕过 normalize_choices，
+  // 不会被后端按文字推断 span，所以静态选项必须自带 span 才与后端结算一致）。
+  { id: "B", text: "在破庙再打坐半日，巩固境界", risk: "low", tag: "cultivate", span: "short" },
   { id: "C", text: "翻检师父遗物，看看还有何可用", risk: "low", tag: "explore" },
 ] as const;
 

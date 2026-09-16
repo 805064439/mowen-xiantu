@@ -16,7 +16,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import {
   CULTIVATE_SPAN, SPAN_LABEL, DEFAULT_CULTIVATE_SPAN, SCENE_PACE_LABEL,
-  ACTION_DAYS, spanHint, actionSpanHint, DAYS_PER_YEAR,
+  ACTION_DAYS, spanHint, actionSpanHint, DAYS_PER_YEAR, INIT_CHOICES,
 } from "../../src/game/constants";
 
 function findServerPy(): string {
@@ -152,6 +152,25 @@ describe("方案一：ChoiceList 必须把时长摆到台面上", () => {
 
   it("picker 把 span 透传给后端（不传则一次吃掉五年）", () => {
     expect(choiceList).toMatch(/span:\s*c\.span/);
+  });
+});
+
+describe("v3.2.4 回归：开局静态选项（INIT_CHOICES）不得缺 span", () => {
+  it("所有 cultivate 开局选项都自带显式 span（否则会落到 DEFAULT=long 显示「约5年」，与后端按文字推断的时长脱节）", () => {
+    for (const c of INIT_CHOICES) {
+      if (c.tag === "cultivate") {
+        expect((c as any).span, `开局选项「${c.text}」缺少 span，会误显示约5年`).toBeTruthy();
+        expect(["short", "medium", "long"]).toContain((c as any).span);
+      }
+    }
+  });
+
+  it("「打坐半日」选项显示「片刻」而非「约5年」", () => {
+    const halfDay = INIT_CHOICES.find((c) => c.text.includes("打坐半日"))!;
+    expect(halfDay).toBeTruthy();
+    expect(halfDay.tag).toBe("cultivate");
+    expect((halfDay as any).span).toBe("short");
+    expect(actionSpanHint("cultivate", "short")).toBe("片刻");
   });
 });
 
