@@ -5,15 +5,25 @@
    否则「选择决定节奏」这件事只存在于数值里，玩家感知不到。 */
 import { game, actions } from "../stores/game";
 import type { Choice } from "../game/types";
-import { actionInfo, riskVolatility, exploreTierOfRisk } from "../game/constants";
+import { actionInfo, riskVolatility, exploreTierOfRisk, actionSpanHint, spanHint,
+         CULTIVATE_SPAN, DEFAULT_CULTIVATE_SPAN, ACTION_DAYS } from "../game/constants";
 
 function pick(c: Choice) {
   actions.act({
     type: c.special === "breakthrough" ? "breakthrough" : "choice",
     id: c.id, text: c.text, tag: c.tag,
     risk: c.risk,   // 探索档位由 risk 决定：low/mid/high → 寻常走动/远行历练/秘境探险
-    short: c.short, // 片刻行功（周天/小坐）：不传则后端一次吃掉五年
+    short: c.short, // v3.1 兼容：片刻行功（周天/小坐）
+    span: c.span,   // 修行粒度（short/medium/long）：不传则后端按整段闭关算，一次吃掉五年
   });
+}
+
+/** 本轮耗时区间：修行走 span 三档，其余走 ACTION_DAYS 表 */
+function spanRange(c: Choice): [number, number] {
+  if (c.tag === "cultivate") {
+    return CULTIVATE_SPAN[c.span ?? ""] ?? CULTIVATE_SPAN[DEFAULT_CULTIVATE_SPAN];
+  }
+  return ACTION_DAYS[c.tag ?? ""] ?? ACTION_DAYS.other;
 }
 
 function riskCls(risk: string) {
@@ -29,45 +39,42 @@ function riskTxt(c: Choice) {
 function actBadge(c: Choice): { label: string; text: string; fast: boolean; volatile: boolean } {
   if (c.special === "breakthrough") return { label: "冲关", text: "冲关", fast: false, volatile: false };
   const info = actionInfo(c.tag);
-  // 片刻行功（周天/小坐）：只过一两天，修为自然少——必须让玩家看出来，否则会以为「修行变弱了」
-  if (c.tag === "cultivate" && c.short) {
-    return { label: info.label, text: `${info.label} · 片刻`, fast: false, volatile: false };
-  }
   if (c.tag === "explore") {
     // 探索档位只看风险档：这决定了耗时、掉率与性命风险
     const tier = exploreTierOfRisk(c.risk);
     return { label: info.label, text: `探索 · ${tier.label}`, fast: false, volatile: true };
   }
-  const vol = riskVolatility(c.tag);
-  if (vol > 0) {
-    return {
-      label: info.label,
-      text: `${info.label} ±${Math.round(vol * 100)}%`,
-      fast: info.coeff > 1,
-      volatile: true,
-    };
-  }
-  const sign = info.coeff >= 1 ? "+" : "";
+  // 其余一律把「要过多久」摆到台面上——点之前不知道是几天还是五年，是最伤的体感问题。
+  // 修为按天产出，所以耗时即收益：看见「约5年」才明白这一下的分量。
   return {
     label: info.label,
-    text: `${info.label} ${sign}${Math.round((info.coeff - 1) * 100)}%`,
+    text: `${info.label} · ${actionSpanHint(c.tag, c.span)}`,
     fast: info.coeff > 1,
-    volatile: false,
+    volatile: riskVolatility(c.tag) > 0,
   };
 }
 
-/** 悬停说明：探索给出档位取舍，其余给行动说明 */
+/** 悬停说明：探索给档位取舍，其余给「行动说明 + 确切耗时」 */
 function actTitle(c: Choice): string {
-  if (c.tag === "cultivate" && c.short) {
-    return "片刻行功：只耗一两天，故修为有限——但在闭关间隙攒连击很划算。";
-  }
   if (c.tag === "explore" && c.special !== "breakthrough") {
     const t = exploreTierOfRisk(c.risk);
     const drop = t.drop > 0 ? `掉宝 ${Math.round(t.drop * 100)}%` : "无掉落";
     const risk = t.death > 0 ? `死亡率 ${(t.death * 100).toFixed(2)}%` : "几无凶险";
     return `${t.label}：${t.note}\n耗时 ${t.days[0]}~${t.days[1]} 天 · ${risk} · ${drop}`;
   }
-  return actionInfo(c.tag).note;
+  const info = actionInfo(c.tag);
+  const [lo, hi] = spanRange(c);
+  const tail = spanHint(lo, hi);
+  if (c.tag === "cultivate") {
+    const s = c.span && CULTIVATE_SPAN[c.span] ? c.span : DEFAULT_CULTIVATE_SPAN;
+    const why = s === "short"
+      ? "只耗一两天，故修为有限——但在闭关间隙攒连击很划算。"
+      : s === "medium"
+        ? "静修一月至数月：修为与寿元的中庸之选。"
+        : "一次闭关跨数年：修为最丰，寿元也耗得最狠。";
+    return `${info.note}\n耗时 ${lo}~${hi} 天（${tail}）——${why}`;
+  }
+  return `${info.note}\n耗时 ${lo}~${hi} 天（${tail}）`;
 }
 
 function retry() {

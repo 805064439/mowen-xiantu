@@ -41,12 +41,17 @@ describe("§6 短修行：前端必须把 short 透传给后端", () => {
     expect(iface?.[1], "GameAction 缺 short").toContain("short");
   });
 
-  it("ChoiceList 的 pick() 原样带上 c.short", () => {
+  it("ChoiceList 的 pick() 原样带上 c.span", () => {
+    expect(choiceListSrc).toMatch(/span:\s*c\.span/);
+  });
+
+  it("pick() 仍带上 v3.1 的 short 兼容字段（老存档/老选项）", () => {
     expect(choiceListSrc).toMatch(/short:\s*c\.short/);
   });
 
-  it("短修行选项在徽标上有可感知的区分（否则玩家以为修行变弱了）", () => {
-    expect(choiceListSrc).toMatch(/c\.tag === "cultivate" && c\.short/);
+  it("所有选项都显示耗时（点之前必须知道要过多久）", () => {
+    expect(choiceListSrc).toMatch(/actionSpanHint\(c\.tag, c\.span\)/);
+    expect(choiceListSrc).toMatch(/spanRange/);
   });
 });
 
@@ -96,9 +101,10 @@ describe("v3.1 地基：后端常量与实现口径", () => {
 });
 
 describe("§6 短修行：后端跨度与关键词兜底", () => {
-  it("SHORT_CULTIVATE_DAYS 是一个远小于闭关跨度的正区间", () => {
-    const m = serverSrc.match(/SHORT_CULTIVATE_DAYS\s*=\s*\((\d+),\s*(\d+)\)/);
-    expect(m, "未找到 SHORT_CULTIVATE_DAYS").toBeTruthy();
+  it("短修行的天数必须远小于一次闭关", () => {
+    // v3.2 起 short 档挂在 CULTIVATE_SPAN 表上，SHORT_CULTIVATE_DAYS 只是兼容别名
+    const m = serverSrc.match(/"short":\s*\((\d+),\s*(\d+)\)/);
+    expect(m, "未找到 CULTIVATE_SPAN 的 short 档").toBeTruthy();
     const lo = Number(m![1]);
     const hi = Number(m![2]);
     expect(lo).toBeGreaterThanOrEqual(1);
@@ -106,31 +112,35 @@ describe("§6 短修行：后端跨度与关键词兜底", () => {
     expect(hi).toBeLessThan(30);           // 必须远小于一次闭关（1260~2340 天）
   });
 
+  it("SHORT_CULTIVATE_DAYS 仍是指向 short 档的兼容别名", () => {
+    expect(serverSrc).toMatch(/SHORT_CULTIVATE_DAYS\s*=\s*CULTIVATE_SPAN\["short"\]/);
+  });
+
   it("关键词兜底覆盖「周天」等叙事写法", () => {
-    const m = serverSrc.match(/SHORT_CULTIVATE_HINTS\s*=\s*\(([\s\S]*?)\)/);
-    expect(m, "未找到 SHORT_CULTIVATE_HINTS").toBeTruthy();
+    const m = serverSrc.match(/SPAN_HINTS\s*=\s*\(([\s\S]*?)\n\)/);
+    expect(m, "未找到 SPAN_HINTS").toBeTruthy();
     expect(m![1]).toContain("周天");
   });
 
-  it("normalize_choices 保留 short（丢了等于修复失效）", () => {
-    expect(serverSrc).toMatch(/"short":\s*bool\(c\.get\("short"\)\)/);
+  it("normalize_choices 保留 span（丢了等于修复失效）", () => {
+    expect(serverSrc).toMatch(/item\["span"\] = sp/);
   });
 
-  it("两处路由都透传了 short（/api/act 与 /api/act/stream 不得分叉）", () => {
-    const hits = [...serverSrc.matchAll(/short\s*=\s*is_short_cultivate\(action\)/g)];
-    expect(hits.length, "short 必须在两路端点都被解出").toBe(2);
-    const passes = [...serverSrc.matchAll(/_postprocess_turn\([^)]*short=short/g)];
+  it("两处路由都透传了 span（/api/act 与 /api/act/stream 不得分叉）", () => {
+    const hits = [...serverSrc.matchAll(/span\s*=\s*span_of_cultivate\(action\)/g)];
+    expect(hits.length, "span 必须在两路端点都被解出").toBe(2);
+    const passes = [...serverSrc.matchAll(/_postprocess_turn\([^)]*span=span/g)];
     expect(passes.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("演武数据里的「周天」选项带 short 标记", () => {
-    const hits = [...serverSrc.matchAll(/"text":\s*"[^"]*周天[^"]*"[^}]*"short":\s*True/g)];
+  it("演武数据里的「周天」选项带 span=short 标记", () => {
+    const hits = [...serverSrc.matchAll(/"text":\s*"[^"]*周天[^"]*"[^}]*"span":\s*"short"/g)];
     expect(hits.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("提示词教会模型 short 契约", () => {
+  it("提示词教会模型 span 契约", () => {
     const prompt = serverSrc.slice(serverSrc.indexOf("SYSTEM_PROMPT"));
-    expect(prompt).toContain('"short": true');
+    expect(prompt).toContain('"span"');
     expect(prompt).toContain("周天");
   });
 });

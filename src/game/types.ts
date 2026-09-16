@@ -47,6 +47,7 @@ export interface GameState {
   eff_bonus?: number;                  // 闭关效率加成（由 treasures 派生）
   break_bonus?: number;                // 突破成功率加成（由 treasures 派生）
   elixir_buff?: number;                // 灵丹限时 buff 剩余轮数（服丹后 12 轮）
+  scene_pace?: string;                 // 场景节奏 action|resolve|downtime（只影响给什么选项）
 }
 
 /** 寿元信息（engine_meta.age）——状态栏直接渲染 */
@@ -87,7 +88,8 @@ export interface Choice {
   tag?: string;
   special?: string;
   hint?: string;   // 附带提示（如冲关成功率）
-  short?: boolean; // 片刻行功（周天/小坐）：1~7 天，而非整段闭关的五年
+  short?: boolean; // v3.1 兼容：片刻行功（等价于 span="short"）
+  span?: string; // 修行粒度 short|medium|long（v3.2）：决定这一下要过多久
 }
 
 export interface DeltaApplied {
@@ -121,7 +123,8 @@ export interface CultivateInfo {
   eff?: number;          // 机缘效率乘数（1.0 = 无加成）
   eff_bonus?: number;    // 机缘效率加成（功法/秘籍/真诀 + 灵丹 buff）
   elixir_buff?: number;  // 灵丹 buff 剩余轮数（0 = 未服丹）
-  short?: boolean;       // 本轮是否为「片刻行功」（只过了一两天，不是五年）
+  span?: string;         // 本轮修行粒度（short/medium/long）
+  short?: boolean;       // v3.1 兼容：本轮是否为「片刻行功」（只过了一两天，不是五年）
   tier?: string;         // 探索档位（low/mid/high，仅 explore）
   tier_label?: string;   // 探索档位中文名（寻常走动/远行历练/秘境探险）
 }
@@ -184,7 +187,8 @@ export interface GameAction {
   qty?: number;  // 坊市买卖数量
   tag?: string;  // 选项标签（fight → 后端掷斗法判定）
   risk?: Risk;   // 风险档（explore 时即探索档位：low/mid/high）
-  short?: boolean;  // 片刻行功标记（周天/小坐）：不传则后端一次吃五年
+  short?: boolean;  // v3.1 兼容：片刻行功标记（周天/小坐）：不传则后端一次吃五年
+  span?: string;    // 修行粒度（short|medium|long）：不传则后端按整段闭关算
 }
 
 /** 叙事区的一个段落（一段剧情） */

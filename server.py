@@ -464,12 +464,55 @@ ACTION_DAYS = {
     "other":     (5, 20),      # 随缘：十数日
 }
 
-# 「片刻行功」的短修行跨度（v3.1 修复）：选项文字写「行功一个周天」「原地打坐」时，
-# 叙事暗示的是片刻工夫，绝不能吃满 1260~2340 天（那会让玩家一次点掉 5 年寿命）。
-# 周天只是「天数少」的修行 → 修为自然也少，**不引入任何 lump**，与地基原则一致。
-SHORT_CULTIVATE_DAYS = (1, 7)   # 1~7 天；可按手感收窄到 (1, 3)
-# 关键词兜底：LLM 未标 short 时，按选项文字判「短修行」（显式 short 优先）
-SHORT_CULTIVATE_HINTS = ("周天", "片刻", "小坐", "稍作", "一时半刻", "半日", "数息")
+# ---------------------------------------------------------------- 修行粒度三档（span）
+# 时间尺度在「数值层 / 选项层 / 叙事层」必须一致，否则玩家点「行功一个周天」会被推进五年。
+# 三档严格满足「修为 = 天数 × 日效率」：粒度只改天数，绝不引入任何修为 lump。
+CULTIVATE_SPAN = {
+    "short":  (1, 7),          # 片刻行功：周天、小坐、半日
+    "medium": (30, 120),       # 一次行功：静修一月至数月
+    "long":   (1260, 2340),    # 整段闭关：3.5~6.5 年，均值 5 年（= ACTION_DAYS["cultivate"]）
+}
+DEFAULT_CULTIVATE_SPAN = "long"
+VALID_CULTIVATE_SPAN = tuple(CULTIVATE_SPAN)
+
+# 入定深度：整段闭关才能进入深层定境，碎片化修行只能温养经脉。
+# 用「效率系数」表达（修为 = 天数 × 日效率 × 入定系数），**不是**脱离天数的 lump。
+#
+# ⚠️ 没有它就会出平衡事故：三档若共用同一日效率，长闭关的单轮产出会被
+# 「单轮修为上限」截断而白白浪费，中档却刚好卡在上限内、一点不浪费 ——
+# 实测 n=2000：无系数时「中档5+静养1」100% 入筑基、81 岁、死亡率 0.1%，
+# 直接盖过所有出门路线，玩家从此不必迈出山门。
+# 系数扫描（n=600）：1.0→100% / 0.70→82% / 0.58→38% / 0.55→22% / 0.50→9%。
+# 取 **0.55**：中档落在「纯闭关 11% < 中档 22% < 出门 28% < 静养 35%」的中庸位——
+# 它有意义（比枯坐强），但不足以让人不出门。
+CULTIVATE_SPAN_EFF = {"short": 0.6, "medium": 0.55, "long": 1.0}
+
+# 兼容别名：v3.1 的短修行常量仍指向同一张表，老代码/老测试不会失效
+SHORT_CULTIVATE_DAYS = CULTIVATE_SPAN["short"]
+
+# ---------------------------------------------------------------- 场景节奏（scene_pace）
+# 系统需要知道「此刻处在什么节奏」，否则会在片刻场景里给出整段闭关选项——
+# 这正是「潜心修炼应出现在事件落幕后的空白期」这一诉求落不了地的原因。
+SCENE_PACE = ("action", "resolve", "downtime")
+DEFAULT_SCENE_PACE = "action"
+SCENE_PACE_LABEL = {
+    "action":   "事件进行中",   # 正处在事件当中：禁给整段闭关
+    "resolve":  "事件落幕",     # 大事刚了：宜收束、宜回望
+    "downtime": "空白期",       # 连番平静：正是潜心修炼的好时候
+}
+# 连续多少轮「平静短行动」算进入空白期
+DOWNTIME_STREAK = 3
+# 计入「平静」的行动：不引事件、不冒风险的日常
+CALM_TAGS = ("rest", "other", "trade")
+
+# 关键词兜底：LLM 未给 span 时按文字判粒度（显式 span 优先）。
+# 顺序即优先级——short 的词最具象，故先判。
+SPAN_HINTS = (
+    ("short",  ("周天", "片刻", "小坐", "稍作", "一时半刻", "半日", "数息")),
+    ("medium", ("静修", "潜修", "苦修数月", "闭关一季", "半载", "数月", "一月",
+                "两月", "三月", "旬日", "旬月", "小闭关")),
+)
+SHORT_CULTIVATE_HINTS = dict(SPAN_HINTS)["short"]   # 兼容别名
 
 # 日效率：修为 = 天数 × 日效率 × 各项系数。行动差异已由此表表达，
 # 故按天产出路径不再叠加 ACTION_CULTIVATE_COEFF（否则重复计入）。
@@ -719,28 +762,77 @@ def age_info(state: dict) -> dict:
     }
 
 
-def is_short_cultivate(action: Any) -> bool:
-    """该行动是否为「片刻行功」（周天/小坐）：只对 cultivate 生效。
+def span_of_cultivate(action: Any) -> str | None:
+    """判定修行的**时间粒度**（short / medium / long），只对 cultivate 生效。
 
-    ① 显式标记优先（选项里的 short 字段 / 前端透传）；
-    ② 否则按文字兜底——LLM 生成的选项常常只在文字里写「行功一个周天」而不带标记。
+    ① 显式标记优先：`span` 字段（前端透传 / LLM 给出）；
+    ② `short: true` 是 v3.1 的兼容写法，等价于 `span="short"`；
+    ③ 否则按文字关键词兜底——LLM 生成的选项常只写「行功一个周天」而不带标记；
+    ④ 都判不出则回落到 DEFAULT_CULTIVATE_SPAN（整段闭关）。
+
+    粒度只影响天数，不影响日效率——修为随天数等比缩放，无任何 lump。
     """
     if not isinstance(action, dict) or infer_action_tag(action) != "cultivate":
-        return False
-    if action.get("short"):
-        return True
+        return None
+    raw = str(action.get("span") or "").strip().lower()
+    if raw in CULTIVATE_SPAN:
+        return raw
+    if action.get("short"):          # v3.1 兼容别名
+        return "short"
     text = str(action.get("text") or "")
-    return any(h in text for h in SHORT_CULTIVATE_HINTS)
+    for span, hints in SPAN_HINTS:
+        if any(h in text for h in hints):
+            return span
+    return DEFAULT_CULTIVATE_SPAN
 
 
-def action_exp(action_tag: str, tier: str | None = None, short: bool = False) -> tuple:
+def is_short_cultivate(action: Any) -> bool:
+    """兼容 v3.1：该行动是否为「片刻行功」。等价于 span_of_cultivate() == "short"。"""
+    return span_of_cultivate(action) == "short"
+
+
+def infer_scene_pace(state: dict, action_tag: str = "other", trial: dict | None = None,
+                     npc_events: Any = None, span: str | None = None) -> str:
+    """推断**下一轮**的场景节奏（纯代码，不调 AI）。返回 action / resolve / downtime。
+
+    优先级（高 → 低）：
+      ① resolve：本轮发生了大事——突破、结局、斗法、江湖人物有实质互动
+      ② action ：本轮置身事件中——斗法 / 探索 / 任何天道判定
+      ③ downtime：连续 DOWNTIME_STREAK 轮以上的平静短行动（静养/随缘/坊市/片刻行功）
+      ④ 其余回落 action
+
+    它只决定「选项该怎么给」，不改任何数值——是大闭关该不该出现的开关。
+    """
+    # ① 大事落幕：突破、结局、斗法、重要人物互动
+    if isinstance(trial, dict) and trial:
+        if trial.get("ending") or trial.get("success") is not None or trial.get("fight"):
+            return "resolve"
+    if npc_events:
+        return "resolve"
+    # ② 正处在事件之中
+    if action_tag in ("fight", "explore"):
+        return "action"
+    if trial:
+        return "action"
+    # ③ 连续平静且本轮也是短/静行动 → 空白期
+    # calm_streak 由调用方（回合末）累计后再传入，此处只读不算
+    calm = _to_int(state.get("calm_streak"), 0)
+    is_calm = action_tag in CALM_TAGS or (action_tag == "cultivate" and span in ("short", "medium"))
+    if is_calm and calm >= DOWNTIME_STREAK:
+        return "downtime"
+    return DEFAULT_SCENE_PACE
+
+
+def action_exp(action_tag: str, tier: str | None = None, short: bool = False,
+               span: str | None = None) -> tuple:
     """本轮的时间与修为产出。返回 (修为, 天数, 是否奇遇)。
 
     修为 = 天数 × 日效率。天数同时驱动年岁推进——
     时间与修为同源，是整套寿元系统的地基。**任何脱离天数的裸修为 lump 都不允许存在**。
 
     探索走 EXPLORE_TIERS 三档：档位决定耗时与奇遇率（低/中/高 = 寻常走动/远行历练/秘境探险）。
-    short=True 表示「片刻行功」（周天/小坐），只对 cultivate 生效，走 SHORT_CULTIVATE_DAYS。
+    修行走 CULTIVATE_SPAN 三档：span=short(1~7天) / medium(30~120天) / long(1260~2340天)，
+    **只对 cultivate 生效**，其余 tag 忽略 span。short=True 是 span="short" 的兼容别名。
 
     奇遇（FORTUNE_EXP）现已清空：非闭关行动不再即时给修为。表若被填回，此处会照表生效。
     """
@@ -755,12 +847,16 @@ def action_exp(action_tag: str, tier: str | None = None, short: bool = False) ->
             exp += random.randint(*f_range)
             fortune = True
         return exp, days, fortune
-    if action_tag == "cultivate" and short:
-        lo, hi = SHORT_CULTIVATE_DAYS          # 周天/小坐：1~7 天，不是五年
+    if action_tag == "cultivate":
+        eff_span = span if span in CULTIVATE_SPAN else ("short" if short else None)
+        lo, hi = CULTIVATE_SPAN.get(eff_span, ACTION_DAYS["cultivate"])
     else:
+        eff_span = None
         lo, hi = ACTION_DAYS.get(action_tag, (5, 20))
     days = random.randint(lo, hi)
     exp = days * DAY_EFF.get(action_tag, 0.005)
+    if eff_span:
+        exp *= CULTIVATE_SPAN_EFF.get(eff_span, 1.0)   # 碎片化修行只能温养，入定不深
     fortune = False
     chance = FORTUNE_CHANCE.get(action_tag, 0.0)
     f_range = FORTUNE_EXP.get(action_tag)
@@ -1111,6 +1207,9 @@ def sanitize_state(raw: dict) -> dict:
         "break_bonus": round(treasure_break_bonus(treasures), 3),  # 派生：突破成功率加成
         # 灵丹限时 buff 剩余轮数（白名单 + 上限钳制，防注入「9999 轮」）
         "elixir_buff": _int(raw.get("elixir_buff"), 0, ELIXIR_BUFF_ROUNDS, 0),
+        # ---- 场景节奏（v3.2）：只影响「该给什么选项」，不影响任何数值 ----
+        "scene_pace": raw.get("scene_pace") if raw.get("scene_pace") in SCENE_PACE else DEFAULT_SCENE_PACE,
+        "calm_streak": _int(raw.get("calm_streak"), 0, 999, 0),   # 连续平静轮数（推断 downtime 用）
     }
 
 
@@ -1525,11 +1624,35 @@ def apply_delta(state: dict, d: dict) -> None:
 # ---------------------------------------------------------------- 选项后处理
 VALID_RISK = ("low", "mid", "high")
 FILLER_CHOICES = [
-    # 文字写「原地打坐」是片刻工夫 → short: True，否则会一次吃掉五年（§6 修复）
-    {"text": "原地打坐，调息养气", "risk": "low", "tag": "cultivate", "short": True},
+    # 文字写「原地打坐」是片刻工夫 → span=short，否则会一次吃掉五年（§6 修复 / span 三档）
+    {"text": "原地打坐，调息养气", "risk": "low", "tag": "cultivate", "span": "short"},
     {"text": "四下查看，谨慎观察周遭", "risk": "low", "tag": "explore"},
     {"text": "收拾行装，继续赶路", "risk": "mid", "tag": "explore"},
 ]
+
+# 按场景节奏取不同的兜底池（方案三）：AI 没给出选项时，兜底也不能违背节奏
+FILLER_BY_PACE = {
+    # 事件进行中：只给短工夫与推进选项，绝不忽然闭关数年
+    "action": FILLER_CHOICES,
+    # 事件落幕：宜回望收束
+    "resolve": [
+        {"text": "就地调息，平复翻涌气血", "risk": "low", "tag": "rest"},
+        {"text": "将此番经历记入玉简", "risk": "low", "tag": "other"},
+        {"text": "起身四顾，另寻去处", "risk": "mid", "tag": "explore"},
+    ],
+    # 空白期：正是潜心修炼该出现的时候——主动给整段闭关
+    "downtime": [
+        {"text": "觅静室闭关苦修，不问寒暑", "risk": "low", "tag": "cultivate", "span": "long"},
+        {"text": "静心参悟所得功法", "risk": "low", "tag": "cultivate", "span": "medium"},
+        {"text": "下山寻访旧友，问些消息", "risk": "mid", "tag": "explore"},
+    ],
+}
+
+
+def filler_choices(state: dict | None = None) -> list:
+    """按当前场景节奏取兜底选项池；未知节奏回落默认池。"""
+    pace = (state or {}).get("scene_pace")
+    return FILLER_BY_PACE.get(pace) or FILLER_CHOICES
 
 
 def normalize_choices(raw: Any, state: dict) -> list:
@@ -1544,11 +1667,17 @@ def normalize_choices(raw: Any, state: dict) -> list:
             risk = c.get("risk") if c.get("risk") in VALID_RISK else "mid"
             # tag 归一化：非法/中文 tag 按文本回推，保证「行动系数」这套机制不会退化
             tag = infer_action_tag({"text": text, "tag": c.get("tag")})
-            # short 必须保留：否则「行功一个周天」会被重建回默认的 5 年跨度（§6 修复）
-            out.append({"id": "ABC"[len(out)], "text": text, "risk": risk, "tag": tag,
-                        "short": bool(c.get("short"))})
+            # short / span 必须保留：**本函数会重建选项字典**，丢了就等于断言失效——
+            # 「行功一个周天」会被重建回默认的 5 年跨度（§6 修复 / span 三档）
+            item: dict = {"id": "ABC"[len(out)], "text": text, "risk": risk, "tag": tag}
+            sp = str(c.get("span") or "").strip().lower()
+            if sp in CULTIVATE_SPAN:
+                item["span"] = sp
+            if c.get("short"):
+                item["short"] = True
+            out.append(item)
     while len(out) < 3:
-        out.append({"id": "ABC"[len(out)], **random.choice(FILLER_CHOICES)})
+        out.append({"id": "ABC"[len(out)], **random.choice(filler_choices(state))})
     out = out[:3]
     # 修为圆满 → 注入「冲关」特殊选项（唯一能改变境界的通道）
     level = state["realm_index"]
@@ -1590,9 +1719,17 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
    - fight：动手、迎战、厮杀 → 修行较快，但有凶险
    - other：以上皆不属
    三个选项的 tag 要拉开区分（勿三个同 tag），让玩家能借此选择自己的修行节奏。
-   **时长必须与文字相符**：整段闭关 / 苦修 / 长年参悟 = 默认（一次跨数年）；
-   若选项文字是片刻工夫（"行功一个周天""小坐片刻""打坐半日""稍作调息"），必须额外给出 "short": true——
-   否则玩家点一下「行功周天」会被推进整整五年，这是严重的叙事与机制脱节。
+   **外加一个 span 字段（修行粒度），只对 cultivate 有意义，其余 tag 一律省略**——它决定这一下要过多久：
+   - "short"：片刻行功（行功一个周天、小坐、半日、稍作调息）→ 只过一两天
+   - "medium"：一次行功（静修数月、闭关一季、潜修半载）→ 过一月至数月
+   - "long"：整段闭关（闭关苦修、长年参悟、不问寒暑）→ 一次跨数年
+   **span 必须与选项文字的时间暗示严格一致**——写着「行功一个周天」却给 span=long，
+   玩家点一下会被推进整整五年，这是严重的叙事与机制脱节。
+   另须遵守【场景节奏】（见玩家状态末尾）：
+   - action（事件进行中）：**禁止**给出 span=long 的整段闭关——正置身事外者不会忽然闭关数年；
+     给 short / medium，或 explore / fight 等推进事件的选项。
+   - resolve（事件落幕）：宜给回望、收束、善后的选项；可给 medium，仍不给 long。
+   - downtime（空白期）：**应主动提供** span=long 的大闭关选项——此时闭关在叙事上才说得通。
 4. delta：本轮数值变化，与剧情严格一致且幅度克制：hp、qi 变化不超过 ±30，exp 不超过 ±40，spirit_stones 变化不超过 ±80；无变化则全部为 0。
 5. items_add 最多 1 件物品，rarity 为"下品"（常见）、"中品"（偶尔）或"上品"（稀有，非大机缘不可得）；items_remove 只能移除玩家已有物品。品级影响药效，需与剧情匹配。
 6. 不得杀死主角（可重伤、可陷入绝境）；不得无剧情依据地赠送贵重之物。
@@ -1609,7 +1746,8 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 {
   "narrative": "……",
   "choices": [
-    {"id": "A", "text": "……", "risk": "low|mid|high", "tag": "explore|cultivate|trade|fight|rest|other", "short": false}
+    {"id": "A", "text": "……", "risk": "low|mid|high", "tag": "explore|cultivate|trade|fight|rest|other"
+     /* 仅当 tag=cultivate 时另附 "span": "short|medium|long" */}
   ],
   "delta": {
     "hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
@@ -1666,6 +1804,8 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
     if state["recent"]:
         lines = [f'（玩家：{r["action"]}）{r["narrative"]}' for r in state["recent"]]
         seg.append("【最近剧情】\n" + "\n————\n".join(lines))
+    pace = state.get("scene_pace") if state.get("scene_pace") in SCENE_PACE else DEFAULT_SCENE_PACE
+    seg.append(f"【场景节奏】{SCENE_PACE_LABEL[pace]}（{pace}）——依此决定给出的选项，详见系统铁律。")
     atext = str(action.get("text", ""))[:60] or "（未言明的行动）"
     if action.get("type") == "custom":
         atext = f"（自由行动）{atext}"
@@ -1698,11 +1838,14 @@ def sanitize_last_choices(raw: Any, state: dict) -> list:
             }
             if c.get("special") == "breakthrough":
                 item["special"] = "breakthrough"
+            sp = str(c.get("span") or "").strip().lower()
+            if sp in CULTIVATE_SPAN:
+                item["span"] = sp             # 修行粒度须随「沿用上一轮选项」一起带回
             if c.get("short"):
-                item["short"] = True          # 片刻行功标记须随「沿用上一轮选项」一起带回
+                item["short"] = True          # v3.1 兼容别名
             out.append(item)
     if not out:
-        out = [{"id": c_id, **random.choice(FILLER_CHOICES)} for c_id in "ABC"]
+        out = [{"id": c_id, **random.choice(filler_choices(state))} for c_id in "ABC"]
     # 修为圆满 → 补注入冲关选项
     level = state["realm_index"]
     has_bt = any(c.get("special") == "breakthrough" for c in out)
@@ -2076,7 +2219,7 @@ def _mock_trial_scene(trial_text: str) -> dict | None:
             "narrative": body + "。是夜山风过林，涛声如潮，你将所授心法逐句推敲，"
                             "只觉数处旧日滞涩之处豁然贯通。（演武预演）",
             "choices": [
-                {"text": "趁悟性正热，就地行功一个周天", "risk": "mid", "tag": "cultivate", "short": True},
+                {"text": "趁悟性正热，就地行功一个周天", "risk": "mid", "tag": "cultivate", "span": "short"},
                 {"text": "以指为笔，将口诀默录于随身玉简", "risk": "low", "tag": "other"},
                 {"text": "下山寻访故人所说的那处灵穴", "risk": "high", "tag": "explore"},
             ],
@@ -2102,7 +2245,7 @@ MOCK_EVENTS = [
     {
         "narrative": "你寻了处山溪畔的青石盘膝坐下。溪水泠泠，远山如黛。行气一个周天，你忽觉丹田中那缕真元比往日活泼了几分——似是连日奔波，于红尘中磨出的定力反哺了修行。睁眼时日已西斜，衣上落了两片枯叶。",
         "choices": [
-            {"text": "趁热打铁，再行功一个周天", "risk": "mid", "tag": "cultivate", "short": True},
+            {"text": "趁热打铁，再行功一个周天", "risk": "mid", "tag": "cultivate", "span": "short"},
             {"text": "起身赶路，天黑前寻处人家", "risk": "low", "tag": "explore"},
             {"text": "掬溪水洗净风尘，细细思量前路", "risk": "low", "tag": "rest"},
         ],
@@ -2332,21 +2475,28 @@ def health():
 
 def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
                       action_tag: str = "other", risk_roll: float | None = None,
-                      tier: str | None = None, short: bool = False):
+                      tier: str | None = None, short: bool = False,
+                      span: str | None = None, trial: dict | None = None):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
     action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。
     tier 为探索档位（low/mid/high），非探索行动忽略。
-    short 为「片刻行功」标记（周天/小坐），仅 cultivate 生效——见 §6 修复。
+    span 为修行粒度（short/medium/long），仅 cultivate 生效；short=True 是 span="short" 的兼容别名。
 
     修为结算改为「按天产出」（v2）：先掷本轮天数 → 修为 = 天数 × 日效率（+ 奇遇补正），
     再乘 灵根 × 连击 × 状态 × 闭门 × 风险 × 机缘效率。时间与修为同源，寿元才有意义。"""
     if action_tag == "explore" and tier not in EXPLORE_TIERS:
         tier = DEFAULT_EXPLORE_TIER
-    short = bool(short) and action_tag == "cultivate"    # 短修行只对 cultivate 有意义
+    # 粒度只对 cultivate 有意义；显式 span 优先，short 布尔兜底（v3.1 兼容）
+    if action_tag != "cultivate":
+        span = None
+        short = False
+    elif span not in CULTIVATE_SPAN:
+        span = "short" if short else None
+    short = span == "short"
     delta_applied = clamp_ai_delta(data.get("delta"), state)
     ai_exp = delta_applied["exp"]
-    day_exp, days, fortune = action_exp(action_tag, tier, short)
+    day_exp, days, fortune = action_exp(action_tag, tier, short, span)
     if ai_exp < 0:
         # AI 判定的修为折损（走火入魔、散功等）原样保留，不与时间产出对冲
         seclusion_hint = False
@@ -2368,8 +2518,10 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         detail["day_exp"] = round(day_exp, 1)
         detail["fortune"] = fortune
         detail["ai_exp"] = ai_exp
+        if span:
+            detail["span"] = span           # 修行粒度（short/medium/long）——前端据此显时长
         if short:
-            detail["short"] = True          # 片刻行功：告诉前端「这轮只过了一两天」
+            detail["short"] = True          # 兼容 v3.1：片刻行功「这轮只过了一两天」
         if action_tag == "explore" and tier in EXPLORE_TIERS:
             detail["tier"] = tier
             detail["tier_label"] = EXPLORE_TIERS[tier]["label"]
@@ -2440,6 +2592,13 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     check_npc_events(state)
     choices = normalize_choices(data.get("choices"), state)
     state["turn"] += 1
+
+    # ---- 场景节奏：为**下一轮**定调（纯代码推断，不调 AI）
+    # 平静连击累计后写入，供下轮的提示词与兜底选项池使用。
+    is_calm = action_tag in CALM_TAGS or (action_tag == "cultivate" and span in ("short", "medium"))
+    state["calm_streak"] = _to_int(state.get("calm_streak"), 0) + 1 if is_calm else 0
+    state["scene_pace"] = infer_scene_pace(state, action_tag, trial, npc_events, span)
+    meta["scene_pace"] = state["scene_pace"]
 
     # ---- ⑦ 灵丹 buff 倒计时：只在「真正修行」的回合递减（探索回合不消耗）
     # 否则反复出门探索即可无限续 buff，等于绕开闭关白拿效率。
@@ -2586,11 +2745,12 @@ def act(req: ActReq):
         # ④ AI（或演武/兜底）生成剧情 ⑤~⑨ 后处理共用
         action_tag = infer_action_tag(action)
         tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
-        short = is_short_cultivate(action)                          # 片刻行功（周天/小坐）
+        span = span_of_cultivate(action)                            # 修行粒度（short/medium/long）
         forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
         data, meta = generate_scene(state, action, trial_text, root_newly, forced_event)
         narrative, choices, delta_applied, near_death_flag, npc_events = \
-            _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, short=short)
+            _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, span=span,
+                              trial=trial)
         _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
         return {
@@ -2670,7 +2830,7 @@ def act_stream(req: ActReq):
                 breakthrough_view = apply_trial(state, trial)
                 action_tag = infer_action_tag(action)
                 tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
-                short = is_short_cultivate(action)                          # 片刻行功（周天/小坐）
+                span = span_of_cultivate(action)                            # 修行粒度（short/medium/long）
                 forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
                 if API_KEY and _OPENAI_OK:
                     # ④ 流式真天道：边生成边推
@@ -2701,7 +2861,8 @@ def act_stream(req: ActReq):
 
             # ⑤~⑨ 与 /api/act 完全共用的后处理（action_tag 已在上方闭门判定处算好）
             narrative, choices, delta_applied, near_death_flag, npc_events = \
-                _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, short=short)
+                _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, span=span,
+                              trial=trial)
             _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
             # 流式叙事是增量的，done 里带完整文本供前端静默校正

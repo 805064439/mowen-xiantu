@@ -87,22 +87,28 @@ class TestShortMarkerPlumbing:
         assert engine.is_short_cultivate({"text": "行功一个周天", "tag": "rest"}) is False
         assert engine.is_short_cultivate(None) is False
 
-    def test_normalize_choices_preserves_short(self, engine, base_state):
-        """**关键**：normalize_choices 会重建选项字典，丢掉 short 等于修复失效。"""
+    def test_normalize_choices_preserves_span(self, engine, base_state):
+        """**关键**：normalize_choices 会重建选项字典，丢掉 span 等于修复失效。"""
         raw = [
-            {"text": "就地行功一个周天", "risk": "mid", "tag": "cultivate", "short": True},
-            {"text": "闭关苦修三年", "risk": "low", "tag": "cultivate"},
+            {"text": "就地行功一个周天", "risk": "mid", "tag": "cultivate", "span": "short"},
+            {"text": "静修数月", "risk": "low", "tag": "cultivate", "span": "medium"},
             {"text": "下山赶路", "risk": "low", "tag": "explore"},
         ]
         out = engine.normalize_choices(raw, base_state)
+        assert out[0]["span"] == "short"
+        assert out[1]["span"] == "medium"
+        assert "span" not in out[2]          # 非修行不带粒度
+
+    def test_normalize_choices_keeps_legacy_short(self, engine, base_state):
+        """v3.1 的 short 布尔仍是合法输入，须一并保留（老存档/老前端）。"""
+        raw = [{"text": "就地行功一个周天", "risk": "mid", "tag": "cultivate", "short": True}]
+        out = engine.normalize_choices(raw, base_state)
         assert out[0]["short"] is True
-        assert out[1]["short"] is False
-        assert out[2]["short"] is False
 
     def test_filler_marked_short(self, engine):
-        """占位选项「原地打坐」是片刻工夫，必须是 short。"""
+        """占位选项「原地打坐」是片刻工夫，粒度必须是 short。"""
         filler = next(c for c in engine.FILLER_CHOICES if "打坐" in c["text"])
-        assert filler["short"] is True
+        assert filler.get("span") == "short"
 
     def test_mock_events_marked_short(self, engine):
         """演武事件里的「周天」选项同样要标——否则演武模式仍会一次跳五年。"""
@@ -111,11 +117,11 @@ class TestShortMarkerPlumbing:
         for ev in engine.MOCK_EVENTS:
             for c in ev["choices"]:
                 if "周天" in c["text"]:
-                    assert c["short"] is True, c["text"]
+                    assert c.get("span") == "short", c["text"]
 
     def test_prompt_teaches_the_model(self, engine):
         """提示词必须教模型这个契约，否则真实对局仍会漂回五年。"""
-        assert "short" in engine.SYSTEM_PROMPT
+        assert "span" in engine.SYSTEM_PROMPT
         assert "周天" in engine.SYSTEM_PROMPT
 
 

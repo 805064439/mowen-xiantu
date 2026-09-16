@@ -195,6 +195,44 @@ export const ACTION_DAYS: Record<string, [number, number]> = {
   other: [5, 20],
 };
 
+/** 修行粒度三档（与后端 CULTIVATE_SPAN 同源，tests/frontend/span.spec.ts 盯着）：
+ *  只改天数、不改日效率——修为随天数等比缩放，绝不引入裸修为 lump。 */
+export const CULTIVATE_SPAN: Record<string, [number, number]> = {
+  short: [1, 7],        // 片刻行功：周天、小坐、半日
+  medium: [30, 120],    // 一次行功：静修一月至数月
+  long: [1260, 2340],   // 整段闭关：3.5~6.5 年，均值 5 年
+};
+export const DEFAULT_CULTIVATE_SPAN = "long";
+export const SPAN_LABEL: Record<string, string> = {
+  short: "片刻", medium: "数月", long: "多年",
+};
+
+/** 场景节奏（与后端 SCENE_PACE 同源）：决定「此刻该不该给整段闭关」 */
+export const SCENE_PACE = ["action", "resolve", "downtime"] as const;
+export const SCENE_PACE_LABEL: Record<string, string> = {
+  action: "事件进行中", resolve: "事件落幕", downtime: "空白期",
+};
+
+/** 天数区间 → 徽标上的短时长（"约5年" / "约1月" / "数日" / "顷刻"）。
+ *  玩家点之前必须知道这一下要过多久——否则「潜心修行」像片刻、实则五年。 */
+export function spanHint(lo: number, hi: number): string {
+  const avg = (lo + hi) / 2;
+  if (avg >= DAYS_PER_YEAR) return `约${Math.round(avg / DAYS_PER_YEAR)}年`;
+  if (avg >= 30) return `约${Math.max(1, Math.round(avg / 30))}月`;
+  if (avg >= 3) return "数日";
+  return "顷刻";
+}
+
+/** 取某行动该显示的耗时文案：修行走 span 三档，其余走 ACTION_DAYS 表 */
+export function actionSpanHint(tag?: string, span?: string): string {
+  if (tag === "cultivate") {
+    const s = span && CULTIVATE_SPAN[span] ? span : DEFAULT_CULTIVATE_SPAN;
+    return span === "short" ? "片刻" : spanHint(...CULTIVATE_SPAN[s]);
+  }
+  const [lo, hi] = ACTION_DAYS[tag ?? ""] ?? ACTION_DAYS.other;
+  return spanHint(lo, hi);
+}
+
 /** 日效率：修为 = 天数 × 日效率 × 各项系数 */
 export const DAY_EFF: Record<string, number> = {
   cultivate: 0.200,

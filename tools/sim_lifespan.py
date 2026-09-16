@@ -40,17 +40,21 @@ QI_TOTAL = sum(r[1] for r in E.REALM_TABLE)
 
 def _mix(period: int, offset: int, tier: str | None):
     """每 period 轮里，第 offset 轮出门（tier 为探索档位），其余闭关。"""
-    return lambda t: ("explore", tier) if t % period == offset else ("cultivate", None)
+    return lambda t: ("explore", tier, None) if t % period == offset else ("cultivate", None, None)
 
 
 STRATEGIES = {
     "闭关5+远行1":  _mix(6, 5, "mid"),
     "闭关5+秘境1":  _mix(6, 5, "high"),
-    "纯闭关":       lambda t: ("cultivate", None),
-    "远行探索流":   lambda t: ("explore", "mid"),
-    "秘境探索流":   lambda t: ("explore", "high"),
-    "修行5+静养1":  lambda t: ("rest", None) if t % 6 == 5 else ("cultivate", None),
-    "静养为主":     lambda t: ("rest", None),
+    "纯闭关":       lambda t: ("cultivate", None, None),
+    "远行探索流":   lambda t: ("explore", "mid", None),
+    "秘境探索流":   lambda t: ("explore", "high", None),
+    "修行5+静养1":  lambda t: ("rest", None, None) if t % 6 == 5 else ("cultivate", None, None),
+    "静养为主":     lambda t: ("rest", None, None),
+    # v3.2 新增：中档粒度（静修数月）是「不出门、也不烧寿元」的第三条路，
+    # 必须确认它不至于盖过「出门探索」——否则玩家又可以不迈出山门。
+    "纯中档静修":   lambda t: ("cultivate", None, "medium"),
+    "中档5+静养1":  lambda t: ("rest", None, None) if t % 6 == 5 else ("cultivate", None, "medium"),
 }
 
 
@@ -99,12 +103,12 @@ def run(strategy, max_turns: int = 4000) -> dict:
         if s["realm_index"] >= 9:
             break
 
-        tag, tier = strategy(turns)
+        tag, tier, span = strategy(turns)
         turns += 1
         meta: dict = {}
         E._postprocess_turn(
             s, {"delta": {"exp": 0}, "choices": [], "narrative": "n", "memory": ""},
-            meta, "行动", tag, risk_roll=0.0, tier=tier)
+            meta, "行动", tag, risk_roll=0.0, tier=tier, span=span)
         # 贪心服丹：持有即服（只开限时效率 buff，不给裸修为）
         while (s.get("treasures") or {}).get("elixir"):
             if not E.handle_use_elixir(s, _Req()).get("ok"):
