@@ -507,12 +507,22 @@ CALM_TAGS = ("rest", "other", "trade")
 
 # 关键词兜底：LLM 未给 span 时按文字判粒度（显式 span 优先）。
 # 顺序即优先级——short 的词最具象，故先判。
+# 顺序是有讲究的：short → long → medium。
+# long 必须排在 medium 之前：medium 里全是「静修」「潜修」这类对修行本身的泛称，
+# 极易误伤「闭关静修，入定三年」这种已经写明年头的文本 —— 一旦被抢，玩家点的是三年，
+# 实际只推进数十天，而 AI 的叙事照着文本写「三年将尽」，数值与叙事当场打架。
 SPAN_HINTS = (
     ("short",  ("周天", "片刻", "小坐", "稍作", "一时半刻", "半日", "数息")),
+    ("long",   ("长年", "经年", "终年", "长闭关", "闭死关", "长久闭关", "不问寒暑")),
     ("medium", ("静修", "潜修", "苦修数月", "闭关一季", "半载", "数月", "一月",
                 "两月", "三月", "旬日", "旬月", "小闭关")),
 )
 SHORT_CULTIVATE_HINTS = dict(SPAN_HINTS)["short"]   # 兼容别名
+
+# 「以年计的时长」→ long：三年 / 五载 / 十年 / 数载……
+# 用正则而非关键词，因为年头是任意数字，穷举不完。
+# 「半载」的前缀「半」不在计数集合里，所以仍归 medium，不会被这里抢走。
+LONG_SPAN_RE = re.compile(r"[0-9一二三四五六七八九十百千万两数]{1,4}\s*[年载]")
 
 # 日效率：修为 = 天数 × 日效率 × 各项系数。行动差异已由此表表达，
 # 故按天产出路径不再叠加 ACTION_CULTIVATE_COEFF（否则重复计入）。
@@ -767,8 +777,10 @@ def span_of_cultivate(action: Any) -> str | None:
 
     ① 显式标记优先：`span` 字段（前端透传 / LLM 给出）；
     ② `short: true` 是 v3.1 的兼容写法，等价于 `span="short"`；
-    ③ 否则按文字关键词兜底——LLM 生成的选项常只写「行功一个周天」而不带标记；
-    ④ 都判不出则回落到 DEFAULT_CULTIVATE_SPAN（整段闭关）。
+    ③ 「三年 / 数载」这类以年计的写法 → long，且**必须压过** ④ 的关键词：
+       年头是玩家最直观的时间承诺，判低了等于吞掉他的寿元。
+    ④ 关键词兜底——LLM 生成的选项常只写「行功一个周天」而不带标记；
+    ⑤ 都判不出则回落到 DEFAULT_CULTIVATE_SPAN（整段闭关）。
 
     粒度只影响天数，不影响日效率——修为随天数等比缩放，无任何 lump。
     """
@@ -780,6 +792,8 @@ def span_of_cultivate(action: Any) -> str | None:
     if action.get("short"):          # v3.1 兼容别名
         return "short"
     text = str(action.get("text") or "")
+    if LONG_SPAN_RE.search(text):
+        return "long"
     for span, hints in SPAN_HINTS:
         if any(h in text for h in hints):
             return span

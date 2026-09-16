@@ -106,6 +106,41 @@ class TestSpanDetection:
         assert engine.span_of_cultivate(
             {"text": "闭关苦修，不问寒暑", "tag": "cultivate"}) == "long"
 
+    def test_year_wording_beats_generic_medium_words(self, engine):
+        """写明了年头就必须按年走。
+
+        「静修 / 潜修」只是对修行的泛称，若它们抢在「三年」前面命中，
+        玩家点的是三年、系统只推进数十天——寿元被静默吞掉，
+        而 AI 的叙事还照着文本写「三年将尽」，数值与叙事当场打架。
+        这是 2026-09-16 在线上实测到的真实样本（当时只过了 50 天）。
+        """
+        cases = (
+            "闭关静修，入定三年",     # 触发过故障的原始样本
+            "入定五年",
+            "闭关数载",
+            "十年寒窗苦修",
+            "长年闭关不出",
+            "这一坐便是七年",
+        )
+        for text in cases:
+            assert engine.span_of_cultivate(
+                {"text": text, "tag": "cultivate"}) == "long", text
+
+    def test_year_wording_advances_years(self, engine):
+        """判成 long 就得真的推进年：天数必须落在 long 档 1260~2340。"""
+        lo, hi = engine.CULTIVATE_SPAN["long"]
+        sp = engine.span_of_cultivate({"text": "闭关静修，入定三年", "tag": "cultivate"})
+        for _ in range(40):
+            _, days, _ = engine.action_exp("cultivate", None, False, sp)
+            assert lo <= days <= hi
+
+    def test_medium_wording_survives_the_year_regex(self, engine):
+        """年档正则不得误伤 medium：「半载 / 一季 / 数月」仍按 medium 走。"""
+        cases = ("静修数月", "闭关一季", "半载之内潜心修行", "小闭关一月", "旬日行功")
+        for text in cases:
+            assert engine.span_of_cultivate(
+                {"text": text, "tag": "cultivate"}) == "medium", text
+
     def test_legacy_short_bool_is_honoured(self, engine):
         assert engine.span_of_cultivate(
             {"text": "闭关苦修", "tag": "cultivate", "short": True}) == "short"
