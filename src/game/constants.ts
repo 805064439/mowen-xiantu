@@ -202,7 +202,7 @@ export const ACTION_DAYS: Record<string, [number, number]> = {
  *  只改天数、不改日效率——修为随天数等比缩放，绝不引入裸修为 lump。 */
 export const CULTIVATE_SPAN: Record<string, [number, number]> = {
   short: [1, 7],        // 片刻行功：周天、小坐、半日
-  medium: [30, 120],    // 一次行功：静修一月至数月
+  medium: [180, 360],   // 一次行功：静修半年至一年（v3.2.4：30~120 天时通过率 0%，是废档）
   long: [1260, 2340],   // 整段闭关：3.5~6.5 年，均值 5 年
 };
 export const DEFAULT_CULTIVATE_SPAN = "long";

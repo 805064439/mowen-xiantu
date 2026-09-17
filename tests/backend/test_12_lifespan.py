@@ -260,12 +260,17 @@ class TestRestLifeBonus:
         assert s["life_bonus"] == pytest.approx(cap, abs=0.2)
         assert s["lifespan"] == 165 + int(cap)  # 只加整数岁
 
-    def test_rest_is_not_seclusion(self, engine, base_state, lock_days):
-        """静养不算枯坐：连着静养也不吃闭门衰减。"""
+    def test_rest_counts_as_seclusion(self, engine, base_state, lock_days):
+        """v3.2.4 反套利：静养**也算**枯坐（旧行为：连着静养不吃衰减）。
+
+        rest 曾会把 seclusion_streak 归零 —— 玩家每 6 轮插 1 次静养（成本仅 30 天）
+        即可永久规避闭门衰减，静养流 89% 压过探险流 80%，静养成唯一解。
+        现在 rest 并入 SECLUSION_TAGS，只有真正出门才清零。
+        """
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
         self._rest(engine, s, lock_days, 10)
-        assert s["seclusion_streak"] == 0
-        assert engine._seclusion_coeff(s, "cultivate") == 1.0
+        assert s["seclusion_streak"] > 0                                       # 静养同样累加枯坐
+        assert engine._seclusion_coeff(s, "cultivate") == pytest.approx(0.6)    # 衰减到底 0.6 封顶
 
     def test_rest_alone_will_not_kill_you(self, engine, base_state, lock_days):
         """v1 的静养是必死陷阱（319 年）；v2 加了续命后必须能活着跑完。"""
@@ -391,12 +396,16 @@ class TestPacingAnchors:
         return turns, s
 
     def test_mindless_meditation_is_the_worst_route(self, engine):
-        """纯闭关垫底：一次闭关 5 年、效率封顶且无宝物加成，成功率必须显著低于出门流。"""
+        """纯闭关垫底但可行：一次闭关 5 年、效率封顶且无宝物加成，明显劣于出门流。
+
+        v3.2.4 重标定：cap 0.5→1.0 后纯闭关由 14% 升到 ~55%（设计目标 45~60%）。
+        「逼玩家出门」靠的是**显著劣于探险流**（~78%），而非逼死——旧上界 0.35 已作废。
+        """
         sim = load_sim()
         pure = self.win_rate(engine, sim, "纯闭关")
         out = self.win_rate(engine, sim, "闭关5+远行1")
         assert pure < out, f"纯闭关 {pure:.0%} 竟然不劣于出门流 {out:.0%}"
-        assert pure < 0.35, f"纯闭关成功率 {pure:.0%} 过高，压迫感不足"
+        assert 0.45 <= pure <= 0.62, f"纯闭关成功率 {pure:.0%} 不在设计区间 45~60%"
 
     def test_explore_only_route_never_reaches_foundation(self, engine):
         """v3.1 核心成果：纯探索流 **0%** 入筑基。
@@ -408,15 +417,20 @@ class TestPacingAnchors:
         for name in ("远行探索流", "秘境探索流"):
             assert self.win_rate(engine, sim, name) == 0.0, f"{name} 竟能靠出门入筑基"
 
-    def test_static_meditation_route_is_the_best(self, engine):
-        """静养穿插最优：续命 + 重置闭关衰减，略胜探险的宝物加速（38% vs 32%）。"""
+    def test_static_meditation_route_is_no_longer_the_best(self, engine):
+        """v3.2.4：静养流**不再**是最优解（旧行为 89% 压过探险流 80%，成唯一解）。
+
+        真凶是 SECLUSION_TAGS 只认 cultivate —— 静养能重置枯坐计数，成本 30 天却换来
+        「之后所有闭关 +25%」，属典型的低成本高收益套利。把 rest 并入枯坐标签后，
+        静养流降到 ~54%，与纯闭关同档（保守路线），探险流（~78%）成为唯一最优解。
+        """
         sim = load_sim()
         rest = self.win_rate(engine, sim, "修行5+静养1")
         out = self.win_rate(engine, sim, "闭关5+远行1")
         pure = self.win_rate(engine, sim, "纯闭关")
-        assert rest > pure, f"静养流 {rest:.0%} 未优于纯闭关 {pure:.0%}"
-        assert rest + 0.05 >= out, f"静养流 {rest:.0%} 明显劣于探险流 {out:.0%}"
-        assert 0.15 < out < 0.55, f"探险流成功率 {out:.0%} 不在设计区间（约 1/3）"
+        assert rest < out, f"静养流 {rest:.0%} 仍压过探险流 {out:.0%} —— 套利未堵死"
+        assert abs(rest - pure) <= 0.10, f"静养流 {rest:.0%} 应与纯闭关 {pure:.0%} 同档（保守路线）"
+        assert 0.72 <= out <= 0.86, f"探险流成功率 {out:.0%} 不在设计区间 75~82%"
 
     def test_pure_seclusion_costs_more_lifespan(self, engine):
         """纯闭关：把每一轮都换成 5 年枯坐 → 终局年岁更大。这才是寿元压力的来源。"""

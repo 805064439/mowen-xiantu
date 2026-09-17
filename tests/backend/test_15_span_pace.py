@@ -345,7 +345,8 @@ class TestSpanThroughApi:
 
     @pytest.mark.parametrize("payload,days_hi,expect_span", [
         ({"type": "choice", "text": "行功一个周天", "tag": "cultivate", "span": "short"}, 7, "short"),
-        ({"type": "choice", "text": "静修数月", "tag": "cultivate", "span": "medium"}, 120, "medium"),
+        # v3.2.4：中档天数 (30,120) → (180,360)，上界同步
+        ({"type": "choice", "text": "静修数月", "tag": "cultivate", "span": "medium"}, 360, "medium"),
         ({"type": "choice", "text": "闭关苦修，不问寒暑", "tag": "cultivate", "span": "long"},
          99999, "long"),
     ])

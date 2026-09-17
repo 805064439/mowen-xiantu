@@ -262,16 +262,25 @@ class TestSafeguards:
         s = engine.sanitize_state({**base_state, "spirit_stones": 999, "seclusion_streak": streak})
         assert engine._seclusion_coeff(s, "cultivate") == pytest.approx(expected)
 
-    def test_rest_keeps_streak_but_breaks_seclusion(self, engine, base_state):
-        """v2 的关键分离：静养吃连击加成，但不算枯坐——闭门只惩罚真正的死磕。"""
+    def test_rest_no_longer_resets_seclusion(self, engine, base_state):
+        """v3.2.4 反套利：静养仍吃连击加成，但**不再打断枯坐**。
+
+        旧行为是 rest 把 seclusion_streak 归零 —— 于是「连修 5 轮 + 静养 1 轮」只需 30 天，
+        就能永久规避闭门衰减（收益 = 之后所有闭关 +25%），静养流 89% 压过探险流 80%。
+        现在 rest 并入 SECLUSION_TAGS：连击照攒，枯坐计数继续累加，套利消失。
+        """
         s = engine.sanitize_state({**base_state, "spirit_stones": 999})
         for _ in range(5):
             engine._update_cultivate_streak(s, "cultivate")
         engine._update_cultivate_streak(s, "rest")
-        assert s["cultivate_streak"] == 6      # 连击继续攒
-        assert s["seclusion_streak"] == 0      # 枯坐归零 → 不吃衰减
-        assert engine._seclusion_coeff(s, "cultivate") == 1.0
+        assert s["cultivate_streak"] == 6      # 连击继续攒（未变）
+        assert s["seclusion_streak"] == 6      # 枯坐**继续累加**（旧行为是归零）
+        assert engine._seclusion_coeff(s, "cultivate") == 0.8   # 真吃到衰减 0.8^1
         assert engine._cultivate_streak_coeff(s) == 1.4
+        # 只有真正出门才清零两者
+        engine._update_cultivate_streak(s, "explore")
+        assert s["cultivate_streak"] == 0
+        assert s["seclusion_streak"] == 0
 
     def test_cap_is_reachable_before_penalty(self, engine):
         """封顶档必须落在惩罚之前——否则 1.4 加成永远吃不到，取舍就成了假的。"""
@@ -291,8 +300,14 @@ class TestSafeguards:
         assert s["cultivate_streak"] == 0   # 出门即断连
         assert s["seclusion_streak"] == 0
 
-    def test_single_turn_can_not_fill_a_realm(self, engine, base_state, lock_days):
-        """最强配置 + 最长时间的闭关，也不许一轮圆满。"""
+    def test_single_turn_can_fill_a_realm_but_still_needs_a_trial(self, engine, base_state, lock_days):
+        """v3.2.4：cap 0.5 → 1.0，单轮**允许**攒满一层，但**不会一轮破境**。
+
+        旧断言（产出 ≤ 半层 + capped=True）是按 cap=0.5 写的：那时炼气 1 层需求 135、
+        cap 只有 67，长档 5 年闭关的产出被砍掉 81% —— 正是 v3.2 配平事故的全局瓶颈。
+        现在 cap=1.0 是不触顶的「自然饱和点」（仿真 1.0 与 1.2 结果完全相同）。
+        「至少两轮」的安全阀不再由 cap 兼任，改由**冲关成功率**承接（成功率下限 25%）。
+        """
         s = engine.sanitize_state({**base_state, "spirit_stones": 999,
                                    "spirit_root": "天灵根·火", "cultivate_streak": 5})
         lock_days(engine.ACTION_DAYS["cultivate"][1])   # 810 天，闭关上限
@@ -300,8 +315,11 @@ class TestSafeguards:
         _, _, delta, _, _ = engine._postprocess_turn(
             s, {"delta": {"exp": 40}, "choices": [], "narrative": "n", "memory": "m"},
             meta, "闭关", "cultivate")
-        assert delta["exp"] <= engine.exp_max_of(0) // 2
-        assert meta["cultivate"]["capped"] is True
+        need = engine.exp_max_of(0)
+        assert delta["exp"] > need // 2, f"单轮产出 {delta['exp']} 仍只给到半层，cap 未放宽"
+        assert delta["exp"] <= max(1, int(need * engine.SINGLE_TURN_EXP_CAP)), "越过了单轮上限"
+        # 修为可以攒满，但境界不会自动推进 —— 仍需下一次冲关判定
+        assert s["realm_index"] == 0
 
     def test_cap_not_triggered_in_late_realm(self, engine, base_state, lock_days):
         """后期境界需求大，正常收益不该被误伤。"""
@@ -443,10 +461,14 @@ class TestPacingSimulation:
         assert mindless_age > smart_age
 
     def test_focused_route_is_in_reasonable_range(self, engine):
-        """取舍流的量级锚点：约 26 轮 / 128 岁（与 tools/sim_lifespan.py 同量级）。"""
+        """取舍流的量级锚点：约 26 轮 / 94 岁（与 tools/sim_lifespan.py 同量级）。
+
+        v3.2.4 重标定：cap 0.5→1.0 之后长档产出不再被砍 81%，通关年龄由 128 岁降到 94 岁，
+        下界相应放宽（这是**修复配平事故**的预期效果，不是回归）。
+        """
         turns, age = self.run(engine, self.SMART)
         assert 18 <= turns <= 45
-        assert 95 <= age <= 150
+        assert 88 <= age <= 150
 
     def test_single_button_routes_are_all_punished(self, engine):
         """一键到底的路线要么烧寿元（闭关），要么轮数爆炸（静养/坊市），都不划算。
@@ -518,10 +540,11 @@ class TestDisturbance:
         s = engine.sanitize_state({**base_state, "seclusion_streak": 6})
         assert isinstance(engine._seclusion_prompt_note(s, "cultivate"), str)   # 枯坐且达阈值
         assert engine._seclusion_prompt_note(s, "explore") is None              # 非枯坐不触发
-        assert engine._seclusion_prompt_note(s, "rest") is None                 # 静养不算枯坐
+        # v3.2.4：静养**也算**枯坐（旧行为：插静养就能永久规避打扰与衰减）
+        assert isinstance(engine._seclusion_prompt_note(s, "rest"), str)
         s2 = engine.sanitize_state({**base_state, "seclusion_streak": 5})
         assert engine._seclusion_prompt_note(s2, "cultivate") is None           # 未达阈值
-        # 连修很高但从未枯坐（一直穿插静养）→ 不该触发打扰
+        # 连修很高但从未枯坐（一直出门历练）→ 不该触发打扰
         s3 = engine.sanitize_state({**base_state, "cultivate_streak": 9, "seclusion_streak": 0})
         assert engine._seclusion_prompt_note(s3, "cultivate") is None
 
