@@ -254,10 +254,10 @@ export const LIFESPAN_TABLE: [string, number, number][] = [
   ["元婴期", 2600, 3400],
 ];
 export const LIFESPAN_SAFE_RATIO = 0.72;  // 占寿元 72% 以下绝无寿终之虞
-export const REST_LIFE_BONUS_EVERY = 3;   // 每 3 轮静养
+export const REST_LIFE_BONUS_EVERY = 1;   // 每轮静养都结算续命（v3.3.1：3→1，反馈线性化）
 export const REST_LIFE_BONUS = 3.5;       // 寿元上限 +3.5 岁
-// 续命封顶 = 当前境界「基础寿元」的 12%（比例，随境界缩放：筑基 +42、金丹 +198）
-export const REST_LIFE_BONUS_CAP = 0.12;
+// 续命封顶 = 当前境界「基础寿元」的 20%（比例，随境界缩放：筑基 +70、金丹 +330）
+export const REST_LIFE_BONUS_CAP = 0.20;
 
 /** 大境界序号：每 9 层一境 */
 export function stageOf(realmIndex: number): number {

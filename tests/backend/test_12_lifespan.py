@@ -242,15 +242,21 @@ class TestRestLifeBonus:
                 s, {"delta": {}, "choices": [], "narrative": "n", "memory": "m"},
                 {}, "静养", "rest")
 
-    def test_bonus_every_third_rest(self, engine, base_state, lock_days):
+    def test_bonus_every_rest(self, engine, base_state, lock_days):
+        """v3.3.1：每次静养都结算续命（EVERY 3→1，反馈线性化）。
+
+        旧节奏「每 3 轮才给 1 次」下，通关全程仅 ~4 次静养 → 只触发 1 次 →
+        只拿 3.5 岁，连一轮闭关（5 年）都抵不过，续命机制形同虚设。
+        """
         s = engine.sanitize_state({**base_state, "spirit_stones": 999, "lifespan": 165})
-        self._rest(engine, s, lock_days, 2)
-        assert s["lifespan"] == 165        # 不足 3 轮
-        assert s["rest_count"] == 2
         self._rest(engine, s, lock_days, 1)
-        assert s["rest_count"] == 3
+        assert s["rest_count"] == 1
         assert s["life_bonus"] == pytest.approx(3.5)
         assert s["lifespan"] == 168        # 只在跨过整岁时 +3
+        self._rest(engine, s, lock_days, 1)
+        assert s["rest_count"] == 2
+        assert s["life_bonus"] == pytest.approx(7.0)
+        assert s["lifespan"] == 172        # 3.5→7.0，整数部分 +4
 
     def test_bonus_is_capped_at_ratio_of_lifespan(self, engine, base_state, lock_days):
         """v3：续命封顶 = 基础寿元的 12%（不再写死 +60，改比例才随境界缩放）。"""
@@ -358,10 +364,11 @@ class TestPacingAnchors:
     单局噪声大到无法区分好坏路线。改为**多次采样的入筑基成功率**，与文档 §四
     的 n=2000 结论同源（固定种子 → 结果确定可复现）。
 
-    设计意图（三条核心诉求，缺一不可）：
-        1. 纯闭关垫底 → 逼玩家出门；
-        2. 纯探索流归零 → 「只探索刷丹」这条时间作弊已被堵死；
-        3. 静养穿插最优 ≥ 探险 > 纯闭关 → 取舍成立，而非某键通吃。
+    设计意图（v3.3.1 三条核心诉求，缺一不可）：
+        1. 探险流是最优解（75~82%）→ 出门历练必须值回票价；
+        2. 纯探索流归零 + 纯闭关垫底但可行（45~60%）→ 只认一条键位通吃不了；
+        3. 静养流（续命路线 ~68%）与中档流（保守路线）都必须可用、但都低于探险流
+           —— 路线有分工（变强 vs 拖时间 vs 低风险），而非某键通吃。
     """
 
     BALANCED = staticmethod(lambda e, st: "explore"
@@ -418,19 +425,43 @@ class TestPacingAnchors:
             assert self.win_rate(engine, sim, name) == 0.0, f"{name} 竟能靠出门入筑基"
 
     def test_static_meditation_route_is_no_longer_the_best(self, engine):
-        """v3.2.4：静养流**不再**是最优解（旧行为 89% 压过探险流 80%，成唯一解）。
+        """v3.3.1：静养续命修复（EVERY 3→1）后，静养流 ~68% —— 靠拖时间过关的
+        第三条路线真正成形，但**仍低于探险流**（~78%），「探险最优」红线未破。
 
-        真凶是 SECLUSION_TAGS 只认 cultivate —— 静养能重置枯坐计数，成本 30 天却换来
-        「之后所有闭关 +25%」，属典型的低成本高收益套利。把 rest 并入枯坐标签后，
-        静养流降到 ~54%，与纯闭关同档（保守路线），探险流（~78%）成为唯一最优解。
+        旧断言「静养与纯闭关同档（±10pp）」已作废：续命生效后静养流显著高于
+        纯闭关（68% vs 55%）——这正是 P1 的目的（静养的变量价值=续命，终于值钱了）。
         """
         sim = load_sim()
         rest = self.win_rate(engine, sim, "修行5+静养1")
         out = self.win_rate(engine, sim, "闭关5+远行1")
         pure = self.win_rate(engine, sim, "纯闭关")
-        assert rest < out, f"静养流 {rest:.0%} 仍压过探险流 {out:.0%} —— 套利未堵死"
-        assert abs(rest - pure) <= 0.10, f"静养流 {rest:.0%} 应与纯闭关 {pure:.0%} 同档（保守路线）"
+        assert rest < out, f"静养流 {rest:.0%} 仍压过探险流 {out:.0%} —— 红线被破"
+        assert rest > pure, f"静养流 {rest:.0%} 未高于纯闭关 {pure:.0%} —— 续命没生效"
+        assert 0.60 <= rest <= 0.76, f"静养流成功率 {rest:.0%} 不在设计区间 60~75%"
         assert 0.72 <= out <= 0.86, f"探险流成功率 {out:.0%} 不在设计区间 75~82%"
+
+    def test_exploration_beats_medium_route(self, engine):
+        """v3.3.1 红线（P0）：探险流必须显著优于中档流（≥15pp）。
+
+        medium 效率 0.55→0.85 的扫描显示：≥0.90 时「中档5+静养1」会逼近甚至
+        反超探险流（0.95 时 81.4% > 77.9%），废掉「探险必须是最优解」的设计主线。
+        此测试锁死该边界，防止将来再调 medium 系数时不知不觉挤掉探险流。
+        """
+        sim = load_sim()
+        ex = self.win_rate(engine, sim, "闭关5+远行1")
+        md = self.win_rate(engine, sim, "中档5+静养1")
+        assert ex - md >= 0.15, f"探险 {ex:.0%} 领先中档 {md:.0%} 不足 15pp"
+
+    def test_medium_route_is_viable(self, engine):
+        """v3.3.1（P0）：中档效率 0.85 后，纯中档从 0% 废档救活（~24%）。
+
+        但仍明显弱于纯闭关（~55%）——中档是「保守选择」，不是主力。
+        """
+        sim = load_sim()
+        md = self.win_rate(engine, sim, "纯中档静修")
+        pure = self.win_rate(engine, sim, "纯闭关")
+        assert md > 0.10, f"纯中档 {md:.0%} 仍是死选项"
+        assert md < pure, f"纯中档 {md:.0%} 不应压过纯闭关 {pure:.0%}"
 
     def test_pure_seclusion_costs_more_lifespan(self, engine):
         """纯闭关：把每一轮都换成 5 年枯坐 → 终局年岁更大。这才是寿元压力的来源。"""
