@@ -15,6 +15,7 @@ import StickyBar from "./components/StickyBar.vue";
 import StatusDrawer from "./components/StatusDrawer.vue";
 import BackToNow from "./components/BackToNow.vue";
 import SaveCodeModal from "./components/SaveCodeModal.vue";
+import JournalModal from "./components/JournalModal.vue";
 import ShopModal from "./components/ShopModal.vue";
 import ItemDetail from "./components/ItemDetail.vue";
 
@@ -57,6 +58,7 @@ onMounted(() => { actions.init(); });
       <span>点击剧情文字可跳过打字</span>
       <span class="foot-btns">
         <button id="btn-shop" type="button" @click="game.shopOpen = true">坊市</button>
+        <button id="btn-journal" type="button" @click="game.journalOpen = true">对局日志</button>
         <button id="btn-savecode" type="button" @click="game.saveCodeOpen = true">仙缘令</button>
         <button id="btn-restart" type="button" @click="actions.requestRestart()">再入轮回</button>
       </span>
@@ -71,6 +73,7 @@ onMounted(() => { actions.init(); });
   <StatusDrawer />
   <BackToNow />
   <SaveCodeModal v-if="game.saveCodeOpen" />
+  <JournalModal v-if="game.journalOpen" />
   <ShopModal v-if="game.shopOpen" />
   <ItemDetail v-if="game.itemDetail" />
 </template>

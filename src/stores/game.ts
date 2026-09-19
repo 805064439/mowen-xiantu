@@ -9,6 +9,10 @@ import {
   loadReincarnations, saveReincarnations,
   encodeSaveCode, decodeSaveCode,
 } from "../game/storage";
+import {
+  loadJournal, clearJournal, exportJournalAs, rotateSession, appendTurn,
+  type JournalFormat, type Exported,
+} from "../game/journal";
 
 const API = (location.protocol.startsWith("http") ? "" : "http://localhost:8000") + "/api";
 
@@ -32,6 +36,7 @@ export const game = reactive({
   confirmText: "",
   statusDrawerOpen: false,   // 全状态抽屉（点吸顶迷你条唤起）
   saveCodeOpen: false,       // 仙缘令弹窗（存档导入导出）
+  journalOpen: false,        // 对局日志弹窗（每轮剧情/选项导出）
   shopOpen: false,           // 坊市弹窗（固定价格买卖）
   itemDetail: null as string | null,  // 道具详情弹窗（物品名；null = 关闭）
 });
@@ -152,6 +157,10 @@ function applyScene(d: ActResponse) {
   typeNarrative(d.narrative, () => applySceneEffects(d));
 }
 
+/* ---------------- 响应统一出口 ---------------- */
+/** 本轮玩家输入：applySceneEffects 里要连同响应一起写进对局日志 */
+let pendingAction: GameAction | null = null;
+
 function applySceneEffects(d: ActResponse) {
   if (d.breakthrough && d.breakthrough.success) {
     playBreakthrough(d.breakthrough.to);
@@ -196,6 +205,9 @@ function applySceneEffects(d: ActResponse) {
   game.choices = d.choices;
   game.errorCard = null;
   game.inputLocked = false;        // 叙事完毕，恢复选项与自由输入
+  // 对局日志：写成本轮档案（失败静默，不影响主线）
+  try { appendTurn(pendingAction, d); } catch (e) { /* 忽略 */ }
+  pendingAction = null;
   if (d.ending && !game.ended) {
     game.ended = true;
     setTimeout(() => { game.endingShown = true; }, 1400);
@@ -309,6 +321,7 @@ async function act(action: GameAction) {
   game.loading = true;
   game.inputLocked = true;
   game.errorCard = null;
+  pendingAction = action;    // 供本轮日志记「玩家做了什么」
   try {
     const streamed = await actStream(action);   // 优先走 SSE 流式
     if (!streamed) await actLegacy(action);     // 不支持/中断 → 降级整段
@@ -367,6 +380,7 @@ function requestRestart() {
 function confirmRestart() {
   game.confirmOpen = false;
   pushReincarnation();
+  rotateSession();     // 日志保留，但换一批次号，便于跨轮回对照
   removeSave();
   newGame(true);
 }
@@ -434,6 +448,15 @@ async function shopAct(action: GameAction) {
   }
 }
 
-export const actions = { act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText, exportSaveCode, importSaveCode, shopAct };
+/* ---------------- 对局日志（每轮剧情/选项，导出排查用） ---------------- */
+function journalCount(): number { return loadJournal().length; }
+function journalExport(fmt: JournalFormat): Exported | null { return exportJournalAs(fmt); }
+function journalClear(): void { clearJournal(); }
+
+export const actions = {
+  act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText,
+  exportSaveCode, importSaveCode, shopAct,
+  journalCount, journalExport, journalClear,
+};
 
 export type { GameAction };
