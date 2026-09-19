@@ -461,6 +461,16 @@ body.no-scroll{overflow:hidden;}
   padding:6px 20px 22px;
   box-shadow:0 -10px 40px rgba(30,26,20,.3);
   animation:drawerUp .3s cubic-bezier(.2,.9,.3,1) both;
+  /* 高度封顶 + 内部滚动：物品/江湖人物再多也不会把抽屉顶出视口，
+     ✕ 与遮罩永远是可达的（旧版无上限 → 铺满全屏后再也收不回来）。
+     用 88vh 而非 100vh：手机浏览器地址栏会让 100vh 溢出，留 12vh 给遮罩点击。 */
+  max-height:88vh;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+/* 可滚动内容区：min-height:0 是 flex 子项能滚动的关键，漏了它 flex 会按内容撑高 */
+.drawer-body{
+  flex:1 1 auto; min-height:0; overflow-y:auto;
+  overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
 }
 @keyframes drawerUp{from{transform:translateY(100%);} to{transform:none;}}
 .drawer-grip{
@@ -498,7 +508,8 @@ body.no-scroll{overflow:hidden;}
 .drawer-stones b{color:var(--ink); font-variant-numeric:tabular-nums;}
 .drawer-items{
   display:flex; flex-wrap:wrap; gap:8px; margin-top:10px;
-  max-height:32vh; overflow-y:auto;
+  /* 原为 max-height:32vh + overflow-y:auto：抽屉整体滚动后它就成了嵌套滚动容器，
+     手指在物品区上下划时会先吃掉滚动、滑不动外面的内容。统一交给 .drawer-body 滚。 */
   padding:10px; border:1px dashed var(--line); border-radius:9px;
 }
 .drawer-foot{

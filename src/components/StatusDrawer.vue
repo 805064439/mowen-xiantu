@@ -56,6 +56,15 @@ function openItem(name: string) {
 
 function close() { game.statusDrawerOpen = false; }
 
+/* ESC 也能收起：桌面上万一遮罩被内容盖住，键盘仍是保底出口 */
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === "Escape" && game.statusDrawerOpen) close();
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", onKeydown);
+  onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+}
+
 /* 下滑手势关闭（拖动区） */
 const dragY = ref<number | null>(null);
 function onTouchStart(e: TouchEvent) { dragY.value = e.touches[0].clientY; }
@@ -83,7 +92,11 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
 
       <button type="button" class="drawer-close" aria-label="收起状态面板" title="收起" @click="close">✕</button>
 
-      <div class="drawer-head">
+      <!-- 可滚动内容区：物品多/江湖人物多时，抽屉高度封顶、这里内部滚动。
+           ⚠️ 没有它就会出「关不掉」的事故：抽屉原本是 absolute bottom:0 且无高度上限，
+           内容撑爆后整块向上溢出视口，✕ 被顶出屏幕、遮罩也被完全盖住 —— 再也收不回来。 -->
+      <div class="drawer-body">
+        <div class="drawer-head">
         <span class="d-realm">{{ realm }}</span>
         <span class="d-root" :class="{ heaven: root.startsWith('天灵根') }">{{ root }}</span>
         <span class="d-full" v-if="realmFullText">{{ realmFullText }}</span>
@@ -136,6 +149,7 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
       <div class="drawer-foot">
         <span>第 {{ turn + 1 }} 轮</span>
         <span v-if="summary" class="d-summary">前尘：{{ summary.slice(0, 26) }}{{ summary.length > 26 ? "…" : "" }}</span>
+      </div>
       </div>
     </div>
   </div>
