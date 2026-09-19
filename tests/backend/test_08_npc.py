@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""江湖人物（NPC）：道缘升降、称谓语义、天机事件阈值与冷却、相识上限淘汰。
+"""江湖人物（NPC）：道缘升降、称谓语义、天机事件阈值与冷却、相识上限淘汰、
+以及「同一个人被 AI 写成两个名字」的身份归并。
 
 这一层是「AI 提议，代码裁决」的典型：AI 只能提出道缘±20 的变化，
-是否触发事件、是否淘汰旧人，全部由代码说了算。
+是否触发事件、是否淘汰旧人、是不是旧相识，全部由代码说了算。
 """
 import pytest
 
@@ -101,6 +102,103 @@ class TestNpcUpdates:
         assert ev == [{"name": "新人", "delta": 1}]
         assert "新人" in names and "生死交" in names, "至交被误淘汰"
         assert len(names) == engine.NPC_MAX
+
+
+class TestNpcIdentityMerge:
+    """同一个江湖人物被 AI 写成不同名字时，必须并回同一张卡（v3.3.2）。
+
+    症状：名册里出现两个"同一个人"，道缘各记一半，旧卡不再更新。
+    """
+
+    @pytest.mark.parametrize("variant", [
+        "李慕婉姑娘",     # 加敬称
+        "慕婉",           # 省姓氏
+        "李 慕婉",        # 多空格
+        "李慕婉·道友",    # 加称呼 + 标点
+        "慕婉仙子",       # 省姓氏 + 敬称
+    ])
+    def test_variant_name_updates_the_same_card(self, engine, base_state, variant):
+        engine.apply_npc_updates(base_state, {"npc_updates": [
+            {"name": "李慕婉", "title": "散修", "delta": 8}]})
+        engine.apply_npc_updates(base_state, {"npc_updates": [{"name": variant, "delta": 5}]})
+        assert len(base_state["npcs"]) == 1, f"『{variant}』被误当成新人物"
+        assert base_state["npcs"][0]["name"] == "李慕婉", "主名不应被走样的写法顶掉"
+        assert base_state["npcs"][0]["bond"] == 13, "道缘应在原卡上继续累加"
+        assert variant in base_state["npcs"][0]["alias"]
+
+    def test_sect_prefix_is_the_same_person(self, engine, base_state):
+        """门派/绰号前缀：『青衣修士』与『青衣修士李岩』应是一人。"""
+        engine.apply_npc_updates(base_state, {"npc_updates": [
+            {"name": "青衣修士", "title": "散修", "delta": 6}]})
+        engine.apply_npc_updates(base_state, {"npc_updates": [
+            {"name": "青衣修士李岩", "title": "散修", "delta": 4}]})
+        assert len(base_state["npcs"]) == 1
+        assert base_state["npcs"][0]["bond"] == 10
+
+    def test_alias_is_reused_on_later_turns(self, engine, base_state):
+        """记过的曾用名要能反复命中，不能每轮换写法就换卡。"""
+        for variant in ("慕婉", "李慕婉姑娘", "慕婉"):
+            engine.apply_npc_updates(base_state, {"npc_updates": [
+                {"name": variant, "delta": 3}]})
+        assert len(base_state["npcs"]) == 1
+        assert base_state["npcs"][0]["name"] == "慕婉"          # 首见写法即主名
+        assert base_state["npcs"][0]["bond"] == 9
+
+    def test_title_still_updates_on_matched_card(self, engine, base_state):
+        """认出是本人后，身份变了照样更新（姓名不动、身份可动）。"""
+        engine.apply_npc_updates(base_state, {"npc_updates": [
+            {"name": "青云子", "title": "散修", "delta": 5}]})
+        engine.apply_npc_updates(base_state, {"npc_updates": [
+            {"name": "青云道人", "title": "观主", "delta": 0}]})
+        assert len(base_state["npcs"]) == 1
+        assert base_state["npcs"][0]["title"] == "观主"
+        assert base_state["npcs"][0]["name"] == "青云子"
+
+    def test_two_different_people_stay_two_cards(self, engine, base_state):
+        """放宽匹配不能过头：真正的两个人必须还是两张卡。"""
+        engine.apply_npc_updates(base_state, {"npc_updates": [
+            {"name": "李慕婉", "delta": 5},
+            {"name": "李青鸾", "delta": 5},
+            {"name": "碧磷老怪", "delta": -5},
+        ]})
+        assert len(base_state["npcs"]) == 3
+
+    def test_single_char_name_does_not_swallow_others(self, engine, base_state):
+        """单字名不参与子串比对，否则『云』会吞掉『云中鹤』。"""
+        engine.apply_npc_updates(base_state, {"npc_updates": [
+            {"name": "云", "delta": 3}, {"name": "云中鹤", "delta": 3}]})
+        assert len(base_state["npcs"]) == 2
+
+    def test_legacy_save_heals_duplicate_cards(self, engine):
+        """旧存档里已经裂成两张卡的，读档时自动并回一张。"""
+        s = engine.sanitize_state({
+            "realm_index": 0, "hp": 100, "hp_max": 100, "qi": 50, "qi_max": 50,
+            "exp": 0, "spirit_stones": 100, "items": [], "memory": [], "recent": [],
+            "npcs": [
+                {"name": "青衣修士", "title": "江湖人", "bond": 12, "met_turn": 3, "fired": {}},
+                {"name": "青衣修士李岩", "title": "散修", "bond": 7, "met_turn": 9,
+                 "fired": {"gift": 8}},
+            ],
+            "style_echo": [], "memory_summary": "", "reincarnations": [],
+            "pending_events": [], "fail_streak": 0, "last_near_death_turn": -999, "turn": 20,
+        })
+        assert len(s["npcs"]) == 1
+        n = s["npcs"][0]
+        assert n["name"] == "青衣修士"
+        assert n["bond"] == 19, "两段渊源应合到一起"
+        assert n["met_turn"] == 3, "取更早的相识轮次"
+        assert n["title"] == "散修", "取更具体的身份"
+        assert n["fired"] == {"gift": 8}
+        assert "青衣修士李岩" in n["alias"]
+
+    def test_event_under_variant_name_finds_the_card(self, engine, base_state):
+        """天机事件里写的是曾用名，也要认出本人（称谓不回落『故人』）。"""
+        base_state["npcs"] = [{"name": "李慕婉", "title": "丹师", "bond": 90,
+                               "met_turn": 0, "fired": {}}]
+        base_state["pending_events"] = [{"type": "gift", "npc": "慕婉姑娘", "at": 0}]
+        text, _trial, _fx = engine.consume_pending_event(base_state)
+        assert "丹师" in text, "未认出本人，称谓回落成了『故人』"
+        assert "（故人）" not in text, "称谓不应回落到默认的『故人』"
 
 
 class TestNpcEvents:

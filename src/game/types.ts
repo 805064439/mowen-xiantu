@@ -70,6 +70,7 @@ export interface NpcEntry {
   bond: number;
   met_turn?: number;
   fired?: Record<string, number>;  // 已触发过的事件 → 轮次（gift/teach/vendetta，同类一生一次）
+  alias?: string[];                // 曾用名（AI 走样的写法），供后端认人，前端不展示
 }
 
 /** 天机事件：由道缘阈值触发，下一轮结算 */
