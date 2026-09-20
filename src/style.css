@@ -329,6 +329,12 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 }
 #btn-shop:hover{background:var(--gold); color:#f2ecdd; border-color:var(--gold);}
 #btn-shop:disabled{opacity:.4; cursor:default;}
+#btn-journal{
+  font-family:inherit; font-size:11.5px; letter-spacing:2px; color:var(--c-qi);
+  background:none; border:1px solid rgba(61,90,114,.45); border-radius:99px; padding:3px 13px; cursor:pointer;
+  transition:all .18s;
+}
+#btn-journal:hover{background:var(--c-qi); color:#f2ecdd; border-color:var(--c-qi);}
 .foot-btns{display:flex; gap:8px; align-items:center;}
 
 /* ---------- 仙缘令（存档码） ---------- */
