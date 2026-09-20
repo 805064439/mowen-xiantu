@@ -17,6 +17,7 @@ import path from "node:path";
 import {
   CULTIVATE_SPAN, SPAN_LABEL, DEFAULT_CULTIVATE_SPAN, SCENE_PACE_LABEL,
   ACTION_DAYS, spanHint, actionSpanHint, DAYS_PER_YEAR, INIT_CHOICES,
+  exploreTierOfRisk,
 } from "../../src/game/constants";
 
 function findServerPy(): string {
@@ -152,6 +153,25 @@ describe("方案一：ChoiceList 必须把时长摆到台面上", () => {
 
   it("picker 把 span 透传给后端（不传则一次吃掉五年）", () => {
     expect(choiceList).toMatch(/span:\s*c\.span/);
+  });
+
+  it("探索徽标显示的是时长，不是档位名（v3.4）", () => {
+    // 探索一档就是 25~60 天；写「远行历练」玩家点之前看不出会被推进一个月
+    expect(choiceList).toMatch(/探索 · \$\{spanHint\(\.\.\.tier\.days\)\}/);
+    expect(choiceList).not.toMatch(/探索 · \$\{tier\.label\}/);
+  });
+});
+
+describe("v3.4：探索三档的耗时文案必须能拉开区分", () => {
+  it("三档文案互不相同（撞成同一个等于没显示）", () => {
+    const hints = ["low", "mid", "high"].map((r) => spanHint(...exploreTierOfRisk(r).days));
+    expect(new Set(hints).size).toBe(3);
+  });
+
+  it("中档「远行历练」显示的是「约1月」量级，而不是「数日」", () => {
+    expect(spanHint(...exploreTierOfRisk("mid").days)).toBe("约1月");
+    expect(spanHint(...exploreTierOfRisk("low").days)).toBe("数日");
+    expect(spanHint(...exploreTierOfRisk("high").days)).toBe("约4月");
   });
 });
 

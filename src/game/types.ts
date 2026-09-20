@@ -157,6 +157,11 @@ export interface EngineMeta {
   explore_death?: boolean;     // 本轮探索陨落
   elixir?: { buff: number; eff: number };      // 本轮服丹：buff 轮数与效率加成
   elixir_buff_left?: number;   // 回合末灵丹 buff 剩余轮数
+  time_band?: string;          // 本轮所处叙事时间带（片刻 / 旬日内 / 月余 / 经年……）
+  time_conflict?: {            // 剧情与时间带打架（只记录，不重试）
+    kind: "moment_in_long_span" | "span_in_short_turn";
+    band: string; days: number; hits: number;
+  };
 }
 
 export interface ActResponse {

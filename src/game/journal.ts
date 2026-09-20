@@ -156,7 +156,10 @@ function deltaLine(e: JournalEntry): string {
   (d.items_add || []).forEach(it => parts.push(`得 ${it.name}×${it.qty}`));
   (d.items_remove || []).forEach(it => parts.push(`失 ${it.name}×${it.qty}`));
   const days = e.engine_meta?.cultivate?.days;
-  if (days) parts.push(`天数 ${days}`);
+  // v3.4：天数带上所属时间带，导出后一眼能看出「这一轮到底该写多久」
+  if (days) parts.push(`天数 ${days}${e.engine_meta?.time_band ? `（${e.engine_meta.time_band}）` : ""}`);
+  const tc = e.engine_meta?.time_conflict;
+  if (tc) parts.push(`⚠ 剧情与时序不符：${tc.kind}`);
   return parts.length ? parts.join(" · ") : "无增减";
 }
 

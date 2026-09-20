@@ -516,6 +516,53 @@ CULTIVATE_SPAN_EFF = {"short": 0.6, "medium": 0.85, "long": 1.0}
 # 兼容别名：v3.1 的短修行常量仍指向同一张表，老代码/老测试不会失效
 SHORT_CULTIVATE_DAYS = CULTIVATE_SPAN["short"]
 
+# ---------------------------------------------------------------- 叙事时间带（v3.4）
+# 天数原先在 AI 写完剧情之后才掷出，模型动笔时对「这一轮要过多久」一无所知，
+# 于是永远是「当下这一刻」的场景：探索一档就是 25~60 天，剧情却照着「追出半里」写，
+# 玩家看到的是「一夜没过完，系统却推进了 683 天」。
+# 修法：天数前置到调 AI 之前（action_exp 只吃 tag/tier/span，与 AI 输出无关），
+# 并把「这段时间该怎么落笔」一并发给模型。
+TIME_BANDS = (
+    (1,       "片刻",       "只写当下这一幕，不得出现任何时间跳跃。"),
+    (7,       "一两日",     "写一个连贯场景，可含一夜歇息，不得出现『数日后』。"),
+    (20,      "旬日内",     "可跨数日，用『这几日里』推进，仍是同一件事的始末。"),
+    (45,      "半月到一月", "必须写成这一段时日里的经历：可含往返、寻访无果、等待、天候变化，"
+                            "不要写成一镜到底的瞬间动作。"),
+    (90,      "月余",       "必须写出月份推进：数次尝试、几番辗转、草木枯荣，明确点出过了多久。"),
+    (200,     "数月",       "以『数月间』统摄，结果多于过程，中间可略写，结尾交代现状。"),
+    (10 ** 9, "经年",       "以『多年后』收束式写法为主：交代结果、身心变化、外界变迁，不逐日铺陈。"),
+)
+
+
+def time_band_of(days: Any) -> dict:
+    """天数 → 时间带（供提示词要求 AI 按此跨度落笔）。"""
+    d = max(0, _to_int(days, 0))
+    for hi, label, rule in TIME_BANDS:
+        if d <= hi:
+            return {"days": d, "label": label, "rule": rule}
+    return {"days": d, "label": TIME_BANDS[-1][1], "rule": TIME_BANDS[-1][2]}
+
+
+# 叙事与时序打架的自检：模型偶尔仍会照着「片刻」写，而这一轮其实过了上百天。
+# 只记录、不重试——先攒真实冲突率，再决定要不要加严（重试会让 token 与延迟翻倍）。
+TIME_MOMENT_WORDS = ("片刻", "一息", "转瞬", "一炷香", "半个时辰", "一时半刻", "半晌", "须臾", "眨眼")
+TIME_SPAN_WORDS = ("旬日", "半月", "一月", "两月", "数月", "半载", "一载", "经年", "数年",
+                   "三年", "五载", "十年", "寒暑", "数载")
+
+
+def detect_time_conflict(narrative: Any, days: Any) -> dict | None:
+    """剧情写「片刻」却过了上百天（或反之）→ 记一笔，供日志与 lint 统计。"""
+    band = time_band_of(days)
+    n = str(narrative or "")
+    moment = sum(1 for w in TIME_MOMENT_WORDS if w in n)
+    span = sum(1 for w in TIME_SPAN_WORDS if w in n)
+    if band["label"] in ("月余", "数月", "经年") and moment and not span:
+        return {"kind": "moment_in_long_span", "band": band["label"], "days": band["days"], "hits": moment}
+    if band["label"] in ("片刻", "一两日") and span:
+        return {"kind": "span_in_short_turn", "band": band["label"], "days": band["days"], "hits": span}
+    return None
+
+
 # ---------------------------------------------------------------- 场景节奏（scene_pace）
 # 系统需要知道「此刻处在什么节奏」，否则会在片刻场景里给出整段闭关选项——
 # 这正是「潜心修炼应出现在事件落幕后的空白期」这一诉求落不了地的原因。
@@ -1921,6 +1968,14 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 12. 【江湖人物】玩家状态中列出的相识人物，姓名、身份必须严格沿用：本轮写到某人时，name 必须原样照抄名册中的姓名，一字不改——不得加敬称（姑娘、道友、前辈……）、不得加门派或绰号、不得改用省称或简称、不得增删标点，否则会被当成另一个人另立新卡；身份 title 变了可以写新的。本轮剧情若与其中之人有实质互动（交谈、恩怨、授业、冲突），或新登场了一个值得记住的人物，才在 npc_updates 中输出一条，无人物互动则输出空数组。新人物姓名须为 2~4 字中文名，身份一至四字。delta 为本轮道缘变化，正为亲近、负为疏远乃至结仇，幅度必须克制（-20~20），与剧情严格一致。
 13. 若收到【文风禁用】清单，本轮开篇严禁与其中的任何一条相同或高度雷同——换场景、换视角、换句式起笔。
 14. 若收到【斗法判定】或【天机事件】，本轮 narrative 须以此事为主线索展开：其中写明的人物、胜负、伤亡、所得必须原样呈现，可补写招式交锋、神态心理，但不得增删任何结果；此类数值已由天道记入，delta 中不得重复计入。
+15. 【本轮时序】给出了这一轮将流逝的天数与落笔要求，narrative 必须与之相符——这是硬性要求：
+    给的是「月余」却通篇写成「片刻之间」，或给的是「片刻」却写「三年过去」，都是严重脱节。
+    长跨度要写出时间推进（几番尝试、往返、久候、天候与草木变化、人事变迁），
+    短跨度只写当下这一幕，不得凭空拉长时间。
+16. 探索选项的 risk 同时决定耗时：low 约 5~20 天（寻常走动）、mid 约 25~60 天（远行历练）、
+    high 约 80~160 天（秘境探险）。故探索选项的文字必须自带时长暗示
+    （如「往北寻访旬日」「入荒泽一探数月」），**不得把「追出半里」「掘得三五下」这种片刻动作标成 high**；
+    若要写片刻的探查，就给 low，并接受它对应的那点天数与收益。
 
 【输出 json 结构】
 {
@@ -1955,7 +2010,8 @@ def build_state_brief(state: dict) -> dict:
     }
 
 
-def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bool = False) -> str:
+def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bool = False,
+                      days: int | None = None) -> str:
     seg = []
     seg.append("【当前状态】\n" + json.dumps(build_state_brief(state), ensure_ascii=False, indent=1))
     if state.get("memory_summary"):
@@ -1990,6 +2046,17 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
     if action.get("type") == "custom":
         atext = f"（自由行动）{atext}"
     seg.append(f"【本轮输入】\n玩家行动：{atext}")
+    if days is not None:
+        # v3.4：天数先掷、先告知。没有这一段，模型只会写「按下选项的那一瞬间」，
+        # 于是「追出半里」配着 143 天的结算一同出现。
+        band = time_band_of(days)
+        seg.append(
+            "【本轮时序】\n"
+            f"这一轮将流逝 {band['days']} 天（{band['label']}）。\n"
+            f"落笔要求：{band['rule']}\n"
+            "narrative 必须覆盖这段时间——写的是「这段时间里发生的事」，"
+            "不是按下选项的那一瞬间；不得出现与该跨度相矛盾的时间表述。"
+        )
     if root_newly:
         seg.append(f"（特别提示：本轮玩家灵根初次显现——{state.get('spirit_root')}，请在剧情中自然揭示这一事实。）")
     seg.append(
@@ -2223,7 +2290,7 @@ def _slice_text(t, size=24):
 
 
 def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_newly: bool = False,
-                              forced_event: str | None = None):
+                              forced_event: str | None = None, days: int | None = None):
     """real 模式流式生成。yield ("delta", 增量文本) / ("retry", None)。
     生成器 return (data, meta)：流式+校验成功 → AI 数据；否则降级 generate_scene（含重试与兜底）。"""
     t0 = time.time()
@@ -2231,7 +2298,7 @@ def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_n
     try:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly)},
+            {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly, days)},
         ]
         if forced_event:
             messages.append({"role": "user", "content": forced_event})
@@ -2270,7 +2337,7 @@ def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_n
     except Exception:
         pass  # 流式失败（断流/解析/校验）→ 静默降级
     yield ("retry", None)
-    return generate_scene(state, action, trial_text, root_newly)
+    return generate_scene(state, action, trial_text, root_newly, days=days)
 
 
 def _get_client():
@@ -2303,7 +2370,7 @@ def _validate_ai_output(data: Any) -> None:
 
 
 def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool = False,
-                   forced_event: str | None = None) -> tuple[dict, dict]:
+                   forced_event: str | None = None, days: int | None = None) -> tuple[dict, dict]:
     """AI 生成 → 解析校验 → 失败错误回喂重试 1 次 → 仍失败走兜底事件池。
     forced_event 非空时（闭门造车达阈值）：演武路径直接给外界打扰事件，真天道路径把指令塞进 prompt。"""
     t0 = time.time()
@@ -2318,7 +2385,7 @@ def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool 
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly)},
+        {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly, days)},
     ]
     if forced_event:
         messages.append({"role": "user", "content": forced_event})
@@ -2656,7 +2723,8 @@ def health():
 def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
                       action_tag: str = "other", risk_roll: float | None = None,
                       tier: str | None = None, short: bool = False,
-                      span: str | None = None, trial: dict | None = None):
+                      span: str | None = None, trial: dict | None = None,
+                      pre_roll: tuple | None = None):
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
     action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。
@@ -2664,7 +2732,10 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     span 为修行粒度（short/medium/long），仅 cultivate 生效；short=True 是 span="short" 的兼容别名。
 
     修为结算改为「按天产出」（v2）：先掷本轮天数 → 修为 = 天数 × 日效率（+ 奇遇补正），
-    再乘 灵根 × 连击 × 状态 × 闭门 × 风险 × 机缘效率。时间与修为同源，寿元才有意义。"""
+    再乘 灵根 × 连击 × 状态 × 闭门 × 风险 × 机缘效率。时间与修为同源，寿元才有意义。
+
+    v3.4：天数已前置到调 AI 之前（要让模型先知道要过多久，才写得出对得上的剧情），
+    由 pre_roll 传入。**传入时绝不再掷一次**——同一轮掷两次会让提示词里的天数与实际结算分家。"""
     if action_tag == "explore" and tier not in EXPLORE_TIERS:
         tier = DEFAULT_EXPLORE_TIER
     # 粒度只对 cultivate 有意义；显式 span 优先，short 布尔兜底（v3.1 兼容）
@@ -2676,7 +2747,9 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     short = span == "short"
     delta_applied = clamp_ai_delta(data.get("delta"), state)
     ai_exp = delta_applied["exp"]
-    day_exp, days, fortune = action_exp(action_tag, tier, short, span)
+    if pre_roll is None:                      # 老调用（未前置）才自己掷，保证兼容
+        pre_roll = action_exp(action_tag, tier, short, span)
+    day_exp, days, fortune = pre_roll
     if ai_exp < 0:
         # AI 判定的修为折损（走火入魔、散功等）原样保留，不与时间产出对冲
         seclusion_hint = False
@@ -2695,6 +2768,7 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         detail["coeff"] = round(coeff, 2)
         detail["base"] = round(base, 1)
         detail["days"] = days
+        detail["days_band"] = time_band_of(days)["label"]
         detail["day_exp"] = round(day_exp, 1)
         detail["fortune"] = fortune
         detail["ai_exp"] = ai_exp
@@ -2717,6 +2791,11 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     # 濒死修为折损并入飘字
     narrative = str(data.get("narrative", "")).strip()
     memory_line = str(data.get("memory", ""))[:60]
+    # 叙事与时序是否对得上（只记录，不重试）
+    meta["time_band"] = time_band_of(days)["label"]
+    conflict = detect_time_conflict(narrative, days)
+    if conflict:
+        meta["time_conflict"] = conflict
     near_death_flag = False
     if state["hp"] <= 0:
         nd = near_death_protocol(state)
@@ -2926,11 +3005,15 @@ def act(req: ActReq):
         action_tag = infer_action_tag(action)
         tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
         span = span_of_cultivate(action)                            # 修行粒度（short/medium/long）
+        # ④' 天数前置（v3.4）：先掷出这一轮要过多久，再让 AI 按此写剧情。
+        #    随机数相对顺序不变（trial 已掷完、AI 不耗随机），数值配平不受影响。
+        pre_roll = action_exp(action_tag, tier, span == "short", span)
         forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
-        data, meta = generate_scene(state, action, trial_text, root_newly, forced_event)
+        data, meta = generate_scene(state, action, trial_text, root_newly, forced_event,
+                                    days=pre_roll[1])
         narrative, choices, delta_applied, near_death_flag, npc_events = \
             _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, span=span,
-                              trial=trial)
+                              trial=trial, pre_roll=pre_roll)
         _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
         return {
@@ -3011,10 +3094,13 @@ def act_stream(req: ActReq):
                 action_tag = infer_action_tag(action)
                 tier = explore_tier_of(action)                              # 探索档位（非探索为 None）
                 span = span_of_cultivate(action)                            # 修行粒度（short/medium/long）
+                # 天数前置（v3.4）：与 /api/act 同一顺序，两路不得分叉
+                pre_roll = action_exp(action_tag, tier, span == "short", span)
                 forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
                 if API_KEY and _OPENAI_OK:
                     # ④ 流式真天道：边生成边推
-                    it = _narrative_events_from_ai(state, action, trial_text, root_newly, forced_event)
+                    it = _narrative_events_from_ai(state, action, trial_text, root_newly,
+                                                   forced_event, days=pre_roll[1])
                     data = meta = None
                     while True:
                         try:
@@ -3042,7 +3128,7 @@ def act_stream(req: ActReq):
             # ⑤~⑨ 与 /api/act 完全共用的后处理（action_tag 已在上方闭门判定处算好）
             narrative, choices, delta_applied, near_death_flag, npc_events = \
                 _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, span=span,
-                              trial=trial)
+                              trial=trial, pre_roll=pre_roll)
             _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
             # 流式叙事是增量的，done 里带完整文本供前端静默校正

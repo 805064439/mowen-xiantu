@@ -35,6 +35,7 @@ beforeEach(() => installMemoryStorage());
 /** 造一轮后端响应（只带日志用得到的字段） */
 function makeResponse(over: {
   state?: Partial<GameState>; narrative?: string; choices?: ActResponse["choices"];
+  engine_meta?: Partial<ActResponse["engine_meta"]>;
 } = {}): ActResponse {
   return {
     ok: true,
@@ -52,7 +53,8 @@ function makeResponse(over: {
     breakthrough: null,
     near_death: false,
     ending: false,
-    engine_meta: { source: "ai", elapsed_ms: 4321, cultivate: { days: 1800 } as never },
+    engine_meta: { source: "ai", elapsed_ms: 4321, cultivate: { days: 1800 } as never,
+                   ...(over.engine_meta || {}) } as ActResponse["engine_meta"],
   };
 }
 
@@ -238,5 +240,30 @@ describe("导出格式", () => {
     r.engine_meta = { source: "mock" } as never;      // 也没有天数可报
     appendTurn(ACTION, r);
     expect(toMarkdown(loadJournal())).toContain("变化：无增减");
+  });
+});
+
+describe("v3.4：天数带与时序冲突必须落进导出", () => {
+  it("变化行的天数后面带上所属时间带", () => {
+    appendTurn(ACTION, makeResponse({
+      engine_meta: { source: "ai", cultivate: { days: 143 } as never, time_band: "数月" } as never,
+    }));
+    expect(toMarkdown(loadJournal())).toContain("天数 143（数月）");
+  });
+
+  it("剧情与时间带打架时打标记（只记录，不重试）", () => {
+    appendTurn(ACTION, makeResponse({
+      engine_meta: { source: "ai", cultivate: { days: 143 } as never, time_band: "数月",
+                     time_conflict: { kind: "moment_in_long_span", band: "数月", days: 143, hits: 2 } } as never,
+    }));
+    expect(toMarkdown(loadJournal())).toContain("剧情与时序不符");
+  });
+
+  it("不带时间带时仍只报天数（向后兼容老日志）", () => {
+    appendTurn(ACTION, makeResponse({
+      engine_meta: { source: "ai", cultivate: { days: 143 } as never } as never,
+    }));
+    expect(toMarkdown(loadJournal())).toContain("天数 143");
+    expect(toMarkdown(loadJournal())).not.toContain("天数 143（");
   });
 });

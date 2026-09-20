@@ -40,9 +40,11 @@ function actBadge(c: Choice): { label: string; text: string; fast: boolean; vola
   if (c.special === "breakthrough") return { label: "冲关", text: "冲关", fast: false, volatile: false };
   const info = actionInfo(c.tag);
   if (c.tag === "explore") {
-    // 探索档位只看风险档：这决定了耗时、掉率与性命风险
+    // 探索档位只看风险档：这决定了耗时、掉率与性命风险。
+    // v3.4：徽标改摆时长（档位名仍在悬停里）——探索一档就是 25~60 天，
+    // 只写「远行历练」，玩家点下去前根本不知道会被推进一个月。
     const tier = exploreTierOfRisk(c.risk);
-    return { label: info.label, text: `探索 · ${tier.label}`, fast: false, volatile: true };
+    return { label: info.label, text: `探索 · ${spanHint(...tier.days)}`, fast: false, volatile: true };
   }
   // 其余一律把「要过多久」摆到台面上——点之前不知道是几天还是五年，是最伤的体感问题。
   // 修为按天产出，所以耗时即收益：看见「约5年」才明白这一下的分量。
