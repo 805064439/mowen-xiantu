@@ -31,6 +31,8 @@ export interface JournalEntry {
     exp: number; spirit_stones: number; age: number; lifespan: number;
     items: { name: string; qty: number; rarity?: string }[];
     npcs: { name: string; title: string; bond: number }[];
+    // v3.5：未决之事快照——导出后一眼看出「哪一轮开了线、哪一轮收了线」
+    threads: { title: string; cat?: string; open?: number; due?: number }[];
   };
 }
 
@@ -127,6 +129,9 @@ export function appendTurn(action: GameAction | null, d: ActResponse): void {
       age: Number(s.age ?? 0), lifespan: Number(s.lifespan ?? 0),
       items: (s.items || []).map(it => ({ name: it.name, qty: it.qty, rarity: it.rarity })),
       npcs: (s.npcs || []).map(n => ({ name: n.name, title: n.title, bond: n.bond })),
+      threads: (s.threads || []).map(t => ({
+        title: t.title, cat: t.cat, open: t.open, due: t.due,
+      })),
     },
   };
   writeJournal(trimTo([...prev, entry]));
@@ -161,6 +166,18 @@ function deltaLine(e: JournalEntry): string {
   const tc = e.engine_meta?.time_conflict;
   if (tc) parts.push(`⚠ 剧情与时序不符：${tc.kind}`);
   return parts.length ? parts.join(" · ") : "无增减";
+}
+
+function threadLine(e: JournalEntry): string {
+  const list = e.snapshot.threads || [];
+  const meta = (e.engine_meta?.threads || {}) as {
+    closed?: string[]; expired?: string[];
+  };
+  const parts = list.map(t =>
+    `${t.title}（${t.cat ?? "疑窦"}·第${t.open ?? 0}轮起${t.due != null ? `·第${t.due}轮前` : ""}）`);
+  (meta.closed || []).forEach(x => parts.push(`${x} ·已了结`));
+  (meta.expired || []).forEach(x => parts.push(`${x} ·终无下文`));
+  return parts.join(" · ");
 }
 
 function npcLine(e: JournalEntry): string {
@@ -211,6 +228,8 @@ export function toMarkdown(list: JournalList): string {
     const np = npcLine(e);
     if (np) lines.push(`- 道缘：${np}`);
     if (e.breakthrough) lines.push(`- 突破：${e.breakthrough.from} → ${e.breakthrough.to}`);
+    const th = threadLine(e);
+    if (th) lines.push(`- 未决之事：${th}`);
     lines.push(`- 剧情：${e.narrative}`);
     body.push(lines.join("\n"));
   }

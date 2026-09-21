@@ -234,6 +234,18 @@ describe("导出格式", () => {
     expect(exportJournalAs("md")).toBeNull();
   });
 
+  it("带上未决之事快照，导出的 Markdown 里能看出哪条收了", () => {
+    const r = makeResponse();
+    (r.state as GameState).threads = [{ title: "荒泽白影", cat: "疑窦", open: 3, due: 7 }];
+    r.engine_meta = { source: "ai", threads: { closed: ["素衣少女"] } } as never;
+    appendTurn(ACTION, r);
+    const list = loadJournal();
+    expect(list[0].snapshot.threads[0]).toEqual({ title: "荒泽白影", cat: "疑窦", open: 3, due: 7 });
+    const md = toMarkdown(list);
+    expect(md).toContain("未决之事：荒泽白影（疑窦·第3轮起·第7轮前）");
+    expect(md).toContain("素衣少女 ·已了结");
+  });
+
   it("无变化的数值行写作「无增减」", () => {
     const r = makeResponse();
     r.delta_applied = { hp: 0, qi: 0, exp: 0, spirit_stones: 0, items_add: [], items_remove: [] };

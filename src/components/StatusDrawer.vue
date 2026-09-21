@@ -4,6 +4,7 @@
 import { computed, ref, watch, onBeforeUnmount } from "vue";
 import { game } from "../stores/game";
 import { REALMS, EXP_MAX, itemInfo, canUseItem, ageLevel, AGE_HINT, lifespanAvg } from "../game/constants";
+import type { ThreadEntry } from "../game/types";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const root = computed(() => game.state?.spirit_root || "");
@@ -30,6 +31,16 @@ const ageLv = computed(() => ageLevel(age.value / Math.max(lifespan.value, 1)));
 const agePctText = computed(() => Math.round(age.value / Math.max(lifespan.value, 1) * 100) + "%");
 const ageHint = computed(() => AGE_HINT[ageLv.value] || "");
 const npcs = computed(() => game.state?.npcs || []);
+
+/* 未决之事：玩家自己也记不住追过几条线，看见了才知道该去收哪一条 */
+const threads = computed(() => game.state?.threads || []);
+const chronicle = computed(() => game.state?.chronicle || []);
+function isOverdue(t: ThreadEntry): boolean {
+  return (game.state?.turn ?? 0) > (t.due ?? 0);
+}
+function overdueRounds(t: ThreadEntry): number {
+  return Math.max(0, (game.state?.turn ?? 0) - (t.due ?? 0));
+}
 
 /** 道缘数值 → 称谓（与后端 bond_label 同语义） */
 function bondLabel(bond: number): string {
@@ -144,6 +155,22 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
                 :style="{ width: bondPct(n.bond) }"></i></span>
           <span class="npc-bond" :class="{ neg: n.bond < 0 }">{{ bondLabel(n.bond) }}</span>
         </div>
+      </div>
+
+      <div class="drawer-threads" v-if="threads.length">
+        <div class="dt-title">未 决 之 事 <span class="dt-count">{{ threads.length }}/3</span></div>
+        <div v-for="t in threads" :key="t.title" class="thread-row" :class="{ overdue: isOverdue(t) }">
+          <span class="th-cat">{{ t.cat || "疑窦" }}</span>
+          <span class="th-title">{{ t.title }}</span>
+          <span class="th-when">{{ isOverdue(t) ? "已逾期" + overdueRounds(t) + "轮"
+            : "第" + (t.due ?? 0) + "轮前" }}</span>
+          <span class="th-note" v-if="t.note">{{ t.note }}</span>
+        </div>
+      </div>
+
+      <div class="drawer-chronicle" v-if="chronicle.length">
+        <div class="dt-title">大 事 记</div>
+        <div v-for="c in chronicle.slice(-4)" :key="c" class="chr-line">{{ c }}</div>
       </div>
 
       <div class="drawer-foot">

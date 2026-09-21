@@ -13,6 +13,17 @@ export interface Reincarnation {
   ended?: boolean;
 }
 
+/** 未决之事：一条悬而未决的线索（v3.5 台账，后端最多同时在册 3 条） */
+export interface ThreadEntry {
+  id?: number;
+  title: string;      // 线索名（认线不改名）
+  cat?: string;       // 机缘 / 恩怨 / 疑窦 / 人情
+  open?: number;      // 第几轮起
+  last?: number;      // 最后触及轮
+  due?: number;       // 应在第几轮前了结
+  note?: string;      // 一句话近况
+}
+
 export interface GameState {
   realm_index: number;
   hp: number;
@@ -28,6 +39,8 @@ export interface GameState {
   recent: { action: string; narrative: string }[];
   reincarnations?: Reincarnation[];
   npcs?: NpcEntry[];      // 江湖人物（道缘卡）
+  threads?: ThreadEntry[]; // 未决之事（悬而未决的线索，AI 每轮须回应或了结）
+  chronicle?: string[];    // 大事记（已了结之事，供回望）
   style_echo?: string[];  // 最近开篇回声（防 AI 复读）
   pending_events?: PendingEvent[];  // 待结算天机事件（赠宝/传功/寻仇）
   fail_streak?: number;             // 连续突破失败次数（保底依据）
@@ -161,6 +174,11 @@ export interface EngineMeta {
   time_conflict?: {            // 剧情与时间带打架（只记录，不重试）
     kind: "moment_in_long_span" | "span_in_short_turn";
     band: string; days: number; hits: number;
+  };
+  threads?: {                  // v3.5 未决之事台账本轮变动
+    opened?: string[]; advanced?: string[]; closed?: string[]; expired?: string[];
+    dropped?: number; recall_used?: boolean;
+    list?: { title?: string; cat?: string; open?: number; due?: number }[];
   };
 }
 

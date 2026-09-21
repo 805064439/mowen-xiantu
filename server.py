@@ -578,6 +578,37 @@ DOWNTIME_STREAK = 3
 # 计入「平静」的行动：不引事件、不冒风险的日常
 CALM_TAGS = ("rest", "other", "trade")
 
+# ---------------------------------------------------------------- 未决之事（threads）v3.5
+# 「有头无尾」的根因：状态里根本没有地方记着悬而未决的事。AI 每轮只看得见上一轮的
+# 结尾钩子，于是顺着它再往前走一步——五条线全开、零条收束。台账就是给这份债建账：
+# 开线有上限、推进要认名、到期给了结，到期仍不了则由代码自行抹去。**只减不增**。
+THREAD_CATEGORIES = ("机缘", "恩怨", "疑窦", "人情")
+THREAD_MAX = 3                    # 同时在册上限（满了就再也开不了新线，逼 AI 先收一条）
+THREAD_OPEN_PER_TURN = 1          # 一轮最多起几条新线
+THREAD_DUE_TURNS = 4              # 开启后几轮之内应给了结
+THREAD_OVERDUE_GRACE = 2          # 逾期后再宽限几轮；仍无动静则由代码沉入前尘
+THREAD_TITLE_MAX = 12             # 线索标题字数上限
+THREAD_NOTE_MAX = 20              # 一句话近况字数上限
+CHRONICLE_MAX = 12                # 大事记条数上限
+CHRONICLE_LINE_MAX = 40           # 大事记单条字数上限
+
+# 类别兜底：AI 写了四类之外的词，按关键词回推；猜不出则归「疑窦」
+THREAD_CAT_HINTS = (
+    ("机缘", ("宝", "丹", "诀", "藏", "遗", "得", "机缘", "传承", "功法")),
+    ("恩怨", ("仇", "恨", "杀", "怨", "债", "追杀", "报复", "血")),
+    ("人情", ("女", "少", "友", "恩", "师", "兄", "约", "托", "救", "故人")),
+)
+DEFAULT_THREAD_CAT = "疑窦"
+
+# 回访选项模板：三条都不指向在册线索时，用它硬开一个「回去把那件事办了」的入口。
+# （类别 → 话术模板 / tag / risk）
+THREAD_RECALL = {
+    "机缘": ("再探{}", "explore", "high"),
+    "恩怨": ("寻{}了断", "fight", "high"),
+    "疑窦": ("追查{}", "explore", "mid"),
+    "人情": ("回访{}", "explore", "low"),
+}
+
 # 关键词兜底：LLM 未给 span 时按文字判粒度（显式 span 优先）。
 # 顺序即优先级——short 的词最具象，故先判。
 # 顺序是有讲究的：short → long → medium。
@@ -899,17 +930,23 @@ def is_short_cultivate(action: Any) -> bool:
 
 
 def infer_scene_pace(state: dict, action_tag: str = "other", trial: dict | None = None,
-                     npc_events: Any = None, span: str | None = None) -> str:
+                     npc_events: Any = None, span: str | None = None,
+                     thread_closed: bool = False) -> str:
     """推断**下一轮**的场景节奏（纯代码，不调 AI）。返回 action / resolve / downtime。
 
     优先级（高 → 低）：
+      ⓪ resolve：本轮了结（或沉底）了一条在册线索——一件悬事落了地
       ① resolve：本轮发生了大事——突破、结局、斗法、江湖人物有实质互动
       ② action ：本轮置身事件中——斗法 / 探索 / 任何天道判定
-      ③ downtime：连续 DOWNTIME_STREAK 轮以上的平静短行动（静养/随缘/坊市/片刻行功）
+      ③ downtime：连续若干轮平静短行动（静养/随缘/坊市/片刻行功）
       ④ 其余回落 action
 
     它只决定「选项该怎么给」，不改任何数值——是大闭关该不该出现的开关。
     """
+    # ⓪ 了结一条在册线索 = 一件大事落幕（此前连着 11 轮 explore 也出不了落幕，
+    #    因为「没有线被收束过」——这正是剧情永不落幕的原因之一）
+    if thread_closed:
+        return "resolve"
     # ① 大事落幕：突破、结局、斗法、重要人物互动
     if isinstance(trial, dict) and trial:
         if trial.get("ending") or trial.get("success") is not None or trial.get("fight"):
@@ -925,7 +962,9 @@ def infer_scene_pace(state: dict, action_tag: str = "other", trial: dict | None 
     # calm_streak 由调用方（回合末）累计后再传入，此处只读不算
     calm = _to_int(state.get("calm_streak"), 0)
     is_calm = action_tag in CALM_TAGS or (action_tag == "cultivate" and span in ("short", "medium"))
-    if is_calm and calm >= DOWNTIME_STREAK:
+    # 无债一身轻：台账空着的时候更容易进入空白期（才轮得到「闭关数年」的选项）
+    need = DOWNTIME_STREAK - 1 if not (state.get("threads") or []) else DOWNTIME_STREAK
+    if is_calm and calm >= need:
         return "downtime"
     return DEFAULT_SCENE_PACE
 
@@ -1208,6 +1247,188 @@ def apply_npc_updates(state: dict, data: dict) -> list:
     return events
 
 
+# ---------------------------------------------------------------- 未决之事台账（AI 提议，代码裁决）
+def _norm_title(s: Any) -> str:
+    """标题归一化：去空白与标点，用于「同一条线换了个写法」的归并判定。"""
+    return re.sub(r"[\s，。、·「」『』：:；;！!？?“”‘’\"'（）()\-—…《》,.]", "", str(s or ""))
+
+
+def find_thread(threads: list, name: Any):
+    """在册线索认领：精确 → 归一化精确 → 双向子串（≥2 字）。
+
+    与认人同一套哲学：不做编辑距离，宁可漏合并，也不能把两件不相干的事并成一件
+    （「荒泽白影」与「白骨夫人」若按相似度判，会被并成一条，玩家再也找不回另一件）。
+    单字不参与子串比对，免得「鼎」吞掉「鼎中残魂」。
+    """
+    t = _norm_title(name)
+    if not t:
+        return None
+    for th in threads:
+        if _norm_title(th.get("title")) == t:
+            return th
+    if len(t) >= 2:
+        for th in threads:
+            cur = _norm_title(th.get("title"))
+            if len(cur) < 2:
+                continue
+            if t in cur or cur in t:
+                return th
+            # 连续 2 字片段交集：「那白影」→「荒泽白影」（共用「白影」）
+            if any(t[i:i + 2] in cur for i in range(len(t) - 1)) or \
+               any(cur[i:i + 2] in t for i in range(len(cur) - 1)):
+                return th
+    return None
+
+
+def _thread_cat(raw: Any, title: str) -> str:
+    """类别白名单；不在四类内则按标题关键词回推，猜不出归「疑窦」。"""
+    if raw in THREAD_CATEGORIES:
+        return raw
+    for cat, words in THREAD_CAT_HINTS:
+        if any(w in title for w in words):
+            return cat
+    return DEFAULT_THREAD_CAT
+
+
+def apply_thread_updates(state: dict, data: dict) -> dict:
+    """AI 的 thread_updates → 开线 / 推进 / 了结 / 丢弃。返回本轮台账变动摘要。
+
+    裁决规则（全部由代码说了算，AI 的 op 只是**提议**）：
+      · 在册满 THREAD_MAX → open 一律丢弃（不淘汰旧线：旧线是玩家追了很久的债）
+      · 一轮最多开 THREAD_OPEN_PER_TURN 条
+      · 已在册的线被再次 open → 视作推进，绝不另立一条（一件悬事不许拆成两件）
+      · close 命中 → 移出在册、写进大事记
+      · close 未命中（了结一条不在册的线）→ 丢弃，无事发生
+      · advance 未命中 → 有空位就当开新线，没空位丢弃
+    """
+    raw = data.get("thread_updates")
+    threads = state.setdefault("threads", [])
+    chronicle = state.setdefault("chronicle", [])
+    out: dict = {"opened": [], "advanced": [], "closed": [], "dropped": 0}
+    if not isinstance(raw, list):
+        return out
+    turn = _to_int(state.get("turn"), 0)
+    opened_now = 0
+
+    def _open(title: str, note: str, cat_raw: Any) -> bool:
+        nonlocal opened_now
+        if len(threads) >= THREAD_MAX or opened_now >= THREAD_OPEN_PER_TURN:
+            return False
+        threads.append({
+            "id": max((_to_int(t.get("id"), 0) for t in threads), default=0) + 1,
+            "title": title,
+            "cat": _thread_cat(cat_raw, title),
+            "open": turn, "last": turn,
+            "due": turn + THREAD_DUE_TURNS,
+            "note": note,
+        })
+        opened_now += 1
+        return True
+
+    for u in raw[:3]:
+        if not isinstance(u, dict):
+            continue
+        op = str(u.get("op", "")).strip().lower()
+        title = "".join(str(u.get("title", "")).split())[:THREAD_TITLE_MAX]
+        note = "".join(str(u.get("note", "")).split())[:THREAD_NOTE_MAX]
+        if not title:
+            continue
+        hit = find_thread(threads, title)
+        if op == "open":
+            if hit is not None:
+                if note:
+                    hit["note"] = note
+                hit["last"] = turn
+                out["advanced"].append(hit["title"])
+            elif _open(title, note, u.get("cat")):
+                out["opened"].append(title)
+            else:
+                out["dropped"] += 1
+        elif op == "advance":
+            if hit is not None:
+                hit["last"] = turn
+                if note:
+                    hit["note"] = note
+                out["advanced"].append(hit["title"])
+            elif _open(title, note, u.get("cat")):
+                out["opened"].append(title)
+            else:
+                out["dropped"] += 1
+        elif op == "close":
+            if hit is None:
+                out["dropped"] += 1        # 了结一条不在册的线：无事发生
+                continue
+            threads.remove(hit)
+            line = f"第{turn}轮 · {hit['title']}：{note or '已了'}"
+            chronicle.append(line[:CHRONICLE_LINE_MAX])
+            out["closed"].append(hit["title"])
+        else:
+            out["dropped"] += 1
+    threads[:] = threads[:THREAD_MAX]
+    chronicle[:] = chronicle[-CHRONICLE_MAX:]
+    return out
+
+
+def expire_overdue_threads(state: dict) -> list:
+    """逾期太久仍未了结的线 → 沉入前尘（写进大事记与记忆）并移出在册。
+
+    这是「只减不增」的兜底闸门：AI 再怎么喜欢开新线，也攒不出一堆积压。
+    """
+    threads = state.get("threads") or []
+    if not threads:
+        return []
+    turn = _to_int(state.get("turn"), 0)
+    keep, gone = [], []
+    for th in threads:
+        if turn > _to_int(th.get("due"), 0) + THREAD_OVERDUE_GRACE:
+            gone.append(th)
+        else:
+            keep.append(th)
+    if not gone:
+        return []
+    mem = state.setdefault("memory", [])
+    for th in gone:
+        line = f"第{_to_int(th.get('open'), 0)}轮起的「{th.get('title')}」终无下文"
+        state.setdefault("chronicle", []).append(line[:CHRONICLE_LINE_MAX])
+        mem.append(line[:30])
+    state["chronicle"] = (state.get("chronicle") or [])[-CHRONICLE_MAX:]
+    state["memory"] = mem[-20:]
+    state["threads"] = keep
+    return [th.get("title") for th in gone]
+
+
+def _choice_hits_thread(choices: list, threads: list) -> bool:
+    """选项文字里是否出现某条在册线索标题的连续 2 字片段（粗判「指向旧线」）。"""
+    for c in choices or []:
+        text = str((c or {}).get("text", ""))
+        if not text:
+            continue
+        for th in threads:
+            t = _norm_title(th.get("title"))
+            if len(t) >= 2 and any(t[i:i + 2] in text for i in range(len(t) - 1)):
+                return True
+    return False
+
+
+def ensure_thread_choice(choices: list, state: dict) -> tuple[list, bool]:
+    """三条都不指向在册线索时，把第三条换成回访选项。返回 (选项, 是否替换过)。
+
+    没有这一条，玩家想回头办那件事时选项里根本没有入口——「有头无尾」最直接的体感来源。
+    """
+    threads = state.get("threads") or []
+    if not threads or len(choices) < 3:
+        return choices, False
+    if _choice_hits_thread(choices, threads):
+        return choices, False
+    # 还最久未触及的那条债
+    th = sorted(threads, key=lambda t: (_to_int(t.get("last"), 0), _to_int(t.get("id"), 0)))[0]
+    tpl, tag, risk = THREAD_RECALL.get(th.get("cat")) or THREAD_RECALL[DEFAULT_THREAD_CAT]
+    text = tpl.format(str(th.get("title", ""))[:8])[:24]
+    out = [dict(c) for c in choices[:2]]
+    out.append({"id": "ABC"[len(out)], "text": text, "risk": risk, "tag": tag})
+    return out, True
+
+
 def update_style_echo(state: dict, narrative: str) -> None:
     """记下本轮开篇（去空白前 12 字），供下轮【文风禁用】防复读。"""
     head = "".join(str(narrative).split())[:12]
@@ -1427,7 +1648,41 @@ def sanitize_state(raw: dict) -> dict:
         # ---- 场景节奏（v3.2）：只影响「该给什么选项」，不影响任何数值 ----
         "scene_pace": raw.get("scene_pace") if raw.get("scene_pace") in SCENE_PACE else DEFAULT_SCENE_PACE,
         "calm_streak": _int(raw.get("calm_streak"), 0, 999, 0),   # 连续平静轮数（推断 downtime 用）
+        # ---- 未决之事（v3.5）：悬而未决的线索，与它们了结后的大事记 ----
+        "threads": sanitize_threads(raw.get("threads")),
+        "chronicle": sanitize_chronicle(raw.get("chronicle")),
     }
+
+
+def sanitize_threads(raw: Any) -> list:
+    """未决之事白名单：条数、标题、类别、轮次全部钳制。老档缺键 → []。"""
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for t in raw[:THREAD_MAX]:
+        if not isinstance(t, dict):
+            continue
+        title = "".join(str(t.get("title", "")).split())[:THREAD_TITLE_MAX]
+        if not title:
+            continue
+        out.append({
+            "id": clamp(_to_int(t.get("id"), len(out) + 1), 0, 99),
+            "title": title,
+            "cat": _thread_cat(t.get("cat"), title),
+            "open": clamp(_to_int(t.get("open"), 0), 0, 9999),
+            "last": clamp(_to_int(t.get("last"), 0), 0, 9999),
+            "due": clamp(_to_int(t.get("due"), THREAD_DUE_TURNS), 0, 9999),
+            "note": "".join(str(t.get("note", "")).split())[:THREAD_NOTE_MAX],
+        })
+    return out
+
+
+def sanitize_chronicle(raw: Any) -> list:
+    """大事记白名单：只留纯文本，条数与字数封顶。"""
+    if not isinstance(raw, list):
+        return []
+    out = ["".join(str(x).split())[:CHRONICLE_LINE_MAX] for x in raw if str(x).strip()]
+    return out[-CHRONICLE_MAX:]
 
 
 # ---------------------------------------------------------------- 天道判定（判定先行）
@@ -1976,6 +2231,15 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
     high 约 80~160 天（秘境探险）。故探索选项的文字必须自带时长暗示
     （如「往北寻访旬日」「入荒泽一探数月」），**不得把「追出半里」「掘得三五下」这种片刻动作标成 high**；
     若要写片刻的探查，就给 low，并接受它对应的那点天数与收益。
+17. 【未决之事】列出玩家悬而未决的线索——那是玩家已经投入过注意力的事，是"债"：
+    - 本轮 narrative 必须让其中至少一条有推进或结果，不得只顾另起新事；
+    - 三个选项中至少一个指向其中一条（回访、追查、了断皆可）；
+    - 在册已满三条时禁止再开新线——先了结一条，才可再起一条；
+    - 剧情里新起了悬事（未辨之物、未竟之约、未报之恩怨），就在 thread_updates 里开一条；
+      本轮推进或了结了某条，就照实申报。**申报了才算数，光在剧情里写不做数**。
+18. thread_updates 中 op 只能是 open / advance / close；title 沿用已有线索的名字（照抄【未决之事】
+    里的写法），开新线才写新名，2~8 字。**不得把已在册的线索换个名字再开一条**——
+    那等于把一件悬事拆成两件，系统也会把它并回原线；note 一句话写近况或结果，20 字以内。
 
 【输出 json 结构】
 {
@@ -1990,6 +2254,7 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
     "items_remove": []
   },
   "npc_updates": [{"name": "……", "title": "……", "delta": 0}],
+  "thread_updates": [{"op": "open|advance|close", "title": "……", "cat": "机缘|恩怨|疑窦|人情", "note": "……"}],
   "memory": "……"
 }"""
 
@@ -2016,6 +2281,9 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
     seg.append("【当前状态】\n" + json.dumps(build_state_brief(state), ensure_ascii=False, indent=1))
     if state.get("memory_summary"):
         seg.append("【前尘摘要】（更早的旧事，史官笔录，可作背景自然化用）\n" + state["memory_summary"])
+    if state.get("chronicle"):
+        seg.append("【大事记】（已了结之事，可自然回望、可作背景，但不得推翻已有结果）\n"
+                   + "\n".join("· " + c for c in state["chronicle"]))
     if state["memory"]:
         seg.append("【长期记忆】（近期旧事，按时间先后）\n" + "\n".join("· " + m for m in state["memory"]))
     if state.get("reincarnations"):
@@ -2037,6 +2305,36 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
     if state.get("style_echo"):
         lines = [f"· {h}……" for h in state["style_echo"]]
         seg.append("【文风禁用】以下开篇近期已用过，本轮开篇严禁与之相同或雷同：\n" + "\n".join(lines))
+    threads = state.get("threads") or []
+    if threads:
+        turn_now = _to_int(state.get("turn"), 0)
+        lines = []
+        for th in threads:
+            opened = _to_int(th.get("open"), 0)
+            last = _to_int(th.get("last"), 0)
+            when = f"第{opened}轮起"
+            if last and last != opened:
+                when += f" · 第{last}轮触及"
+            when += f" · 第{_to_int(th.get('due'), 0)}轮前应了结"
+            note = th.get("note")
+            lines.append(f"· [{th.get('cat')}] {th.get('title')}（{when}）" + (f"——{note}" if note else ""))
+        seg.append(
+            f"【未决之事】（在册 {len(threads)}/{THREAD_MAX} —— 这些是玩家已投入注意力的线索，是「债」）\n"
+            + "\n".join(lines)
+            + "\n· 本轮 narrative 必须让其中至少一条有推进或结果，不得只顾另起新事；"
+              "\n· 三个选项中至少一个指向其中一条（回访、追查、了断皆可）；"
+            + f"\n· 在册已满 {THREAD_MAX} 条时不得再开新线——先了结一条，才可再起一条。"
+        )
+        overdue = [th for th in threads if turn_now > _to_int(th.get("due"), 0)]
+        if overdue:
+            seg.append(
+                "【逾期未决】下列线索已拖延太久，本轮必须给它们一个结果，或至少推进一步并说明"
+                "为何仍未了；再拖下去它们会被天道自行抹去，玩家将永远看不到下文：\n"
+                + "\n".join(
+                    f'· {th.get("title")}（已逾期 {turn_now - _to_int(th.get("due"), 0)} 轮）'
+                    for th in overdue
+                )
+            )
     if state["recent"]:
         lines = [f'（玩家：{r["action"]}）{r["narrative"]}' for r in state["recent"]]
         seg.append("【最近剧情】\n" + "\n————\n".join(lines))
@@ -2849,15 +3147,27 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
 
     npc_events = apply_npc_updates(state, data)
     check_npc_events(state)
+    # ---- 未决之事台账：AI 提议 → 代码裁决（开 / 推 / 收 / 丢），随后扫逾期沉底 ----
+    thread_res = apply_thread_updates(state, data)
+    expired = expire_overdue_threads(state)
     choices = normalize_choices(data.get("choices"), state)
+    choices, recall_used = ensure_thread_choice(choices, state)
     state["turn"] += 1
 
     # ---- 场景节奏：为**下一轮**定调（纯代码推断，不调 AI）
     # 平静连击累计后写入，供下轮的提示词与兜底选项池使用。
     is_calm = action_tag in CALM_TAGS or (action_tag == "cultivate" and span in ("short", "medium"))
     state["calm_streak"] = _to_int(state.get("calm_streak"), 0) + 1 if is_calm else 0
-    state["scene_pace"] = infer_scene_pace(state, action_tag, trial, npc_events, span)
+    state["scene_pace"] = infer_scene_pace(state, action_tag, trial, npc_events, span,
+                                           thread_closed=bool(thread_res["closed"] or expired))
     meta["scene_pace"] = state["scene_pace"]
+    meta["threads"] = {
+        "opened": thread_res["opened"], "advanced": thread_res["advanced"],
+        "closed": thread_res["closed"], "dropped": thread_res["dropped"],
+        "expired": expired, "recall_used": recall_used,
+        "list": [{"title": t.get("title"), "cat": t.get("cat"), "open": t.get("open"),
+                  "due": t.get("due")} for t in (state.get("threads") or [])],
+    }
 
     # ---- ⑦ 灵丹 buff 倒计时：只在「真正修行」的回合递减（探索回合不消耗）
     # 否则反复出门探索即可无限续 buff，等于绕开闭关白拿效率。

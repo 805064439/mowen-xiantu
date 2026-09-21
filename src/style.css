@@ -396,6 +396,25 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 .npc-bond{font-size:10.5px; color:var(--jade); letter-spacing:1px; flex:none; width:44px; text-align:right;}
 .npc-bond.neg{color:var(--seal);}
 
+/* ---------- 未决之事 / 大事记（v3.5 台账） ---------- */
+.drawer-threads{margin-top:12px; padding-top:10px; border-top:1px dashed var(--line);}
+.dt-title{font-size:11px; color:var(--muted); letter-spacing:4px; margin-bottom:6px;}
+.dt-count{font-size:10px; color:var(--jade); letter-spacing:1px; margin-left:4px;}
+.thread-row{display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin:6px 0;}
+.thread-row.overdue .th-title{color:var(--seal);}
+.th-cat{font-size:10px; color:var(--jade); border:1px solid rgba(74,107,79,.45);
+  padding:0 6px; border-radius:99px; letter-spacing:1px; flex:none;}
+.thread-row.overdue .th-cat{color:var(--seal); border-color:rgba(164,74,58,.5);}
+.th-title{font-size:13.5px; font-weight:700; color:var(--ink); letter-spacing:1px; flex:none;
+  max-width:10em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.th-when{font-size:10.5px; color:var(--muted); letter-spacing:.5px; flex:none;}
+.thread-row.overdue .th-when{color:var(--seal);}
+.th-note{font-size:10.5px; color:var(--muted); letter-spacing:.5px; flex:1 1 100%;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.drawer-chronicle{margin-top:10px; padding-top:8px; border-top:1px dashed var(--line);}
+.chr-line{font-size:10.5px; color:var(--muted); letter-spacing:.5px; margin:4px 0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+
 /* ---------- 道缘飘字 ---------- */
 .f-npc{color:var(--jade);}
 
