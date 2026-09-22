@@ -118,10 +118,11 @@ class TestCollectionCleaning:
         s = engine.sanitize_state({**base_state, "memory_summary": "摘要" * 500})
         assert len(s["memory_summary"]) <= engine.SUMMARY_MAX
 
-    def test_recent_keeps_only_two(self, engine, base_state):
+    def test_recent_keeps_only_a_short_window(self, engine, base_state):
+        """recent 只留 RECENT_KEEP 条（v3.6：2 → 4）——交给 AI 的近期剧情窗口。"""
         recent = [{"action": "a", "narrative": "n"} for _ in range(10)]
         s = engine.sanitize_state({**base_state, "recent": recent})
-        assert len(s["recent"]) == 2
+        assert len(s["recent"]) == engine.RECENT_KEEP
 
     def test_reincarnations_capped(self, engine, base_state):
         re = [{"realm": "筑基初期", "turn": 10, "memory": ["a"]} for _ in range(20)]

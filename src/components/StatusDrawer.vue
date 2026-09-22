@@ -3,7 +3,10 @@
    三围/背包实时响应（用丹不关抽屉，连嗑），物品点击直接服用。 */
 import { computed, ref, watch, onBeforeUnmount } from "vue";
 import { game } from "../stores/game";
-import { REALMS, EXP_MAX, itemInfo, canUseItem, ageLevel, AGE_HINT, lifespanAvg } from "../game/constants";
+import {
+  REALMS, EXP_MAX, itemInfo, canUseItem, ageLevel, AGE_HINT, lifespanAvg,
+  STALL_FORCE_TURNS, STALL_TAKEOVER_TURNS,
+} from "../game/constants";
 import type { ThreadEntry } from "../game/types";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
@@ -35,6 +38,13 @@ const npcs = computed(() => game.state?.npcs || []);
 /* 未决之事：玩家自己也记不住追过几条线，看见了才知道该去收哪一条 */
 const threads = computed(() => game.state?.threads || []);
 const chronicle = computed(() => game.state?.chronicle || []);
+
+/* 追索停滞（v3.6）：连追同一件事好几轮，玩家自己未必察觉——抽屉里给它一个明示。
+   看见了才知道该收手还是该换个法子，也才知道再拖下去天道会自行划去。 */
+const stallCount = computed(() => game.state?.stall?.count ?? 0);
+const stallLabel = computed(() => game.state?.stall?.label ?? "");
+const stallShown = computed(() => stallCount.value >= STALL_FORCE_TURNS);
+const stallLeft = computed(() => Math.max(0, STALL_TAKEOVER_TURNS - stallCount.value));
 function isOverdue(t: ThreadEntry): boolean {
   return (game.state?.turn ?? 0) > (t.due ?? 0);
 }
@@ -154,6 +164,15 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
           <span class="npc-track"><i class="npc-fill" :class="{ neg: n.bond < 0 }"
                 :style="{ width: bondPct(n.bond) }"></i></span>
           <span class="npc-bond" :class="{ neg: n.bond < 0 }">{{ bondLabel(n.bond) }}</span>
+        </div>
+      </div>
+
+      <div class="drawer-stall" v-if="stallShown">
+        <div class="dt-title">久 追 未 果</div>
+        <div class="stall-row">
+          <span class="st-label">{{ stallLabel || "此事" }}</span>
+          <span class="st-count">已追 {{ stallCount }} 轮</span>
+          <span class="st-warn">{{ stallLeft > 0 ? "再无结果，天道将自行划去" : "本轮了结，否则就此作罢" }}</span>
         </div>
       </div>
 

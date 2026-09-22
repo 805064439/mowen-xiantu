@@ -608,6 +608,38 @@ THREAD_RECALL = {
     "疑窦": ("追查{}", "explore", "mid"),
     "人情": ("回访{}", "explore", "low"),
 }
+# 逾期线专用：话术要比回访更硬，逼出终局而非「再去看看」
+THREAD_CLOSE_TPL = {
+    "机缘": ("强启{}，成败在此一举", "explore", "high"),
+    "恩怨": ("寻{}做个了断", "fight", "high"),
+    "疑窦": ("就{}问到最后一人", "explore", "mid"),
+    "人情": ("登门找{}说个明白", "explore", "low"),
+}
+
+# ---------------------------------------------------------------- 追索停滞（v3.6）
+# 病根：一条线索可以被无限期悬置——玩家连点八轮「追查某人」，每轮都只多一枚碎片，
+# 台账却因为「AI 没申报」或「选项沾了线索字就当已照顾」而全程不响。
+# 修法：代码自己数「玩家是不是还在追同一件事」，数到阈值就先逼结果、再强行收场。
+STALL_FORCE_TURNS = 3        # 连追第几轮起，本轮必须给这件事一个交代
+STALL_TAKEOVER_TURNS = 5     # 第几轮仍无结果，由代码收场并强制换场
+STALL_LABEL_MAX = 8          # 追索目标短语（展示用）字数上限
+STALL_KEY_MAX = 20           # 指纹原文上限
+STALL_SIM_RATIO = 0.5        # 两句话判为「同一件事」的片段重合比例门槛
+# 会「空转」的行动类型：只有这类行动才计入无产出连击（打坐本就该没产出）
+DRY_TAGS = ("explore", "fight")
+# 选项里出现这些词，视为 AI 已主动给了「罢手/改道」的出口，不必再由代码替换
+RESOLVE_WORDS = ("了断", "罢手", "放弃", "作罢", "不再", "断了", "死心", "另寻", "回头", "歇手")
+
+STALL_TAKEOVER_TEXT = (
+    "\n\n此事追到此处，已是尽头——再耗下去，耗的只是寿元。"
+    "你在心里把它划去了，转而盘算别的出路。"
+)
+
+STALL_TAKEOVER_LINES = (
+    "再寻无果，就此作罢",
+    "线索到此断绝，无可再追",
+    "心力耗尽，此事放下",
+)
 
 # 关键词兜底：LLM 未给 span 时按文字判粒度（显式 span 优先）。
 # 顺序即优先级——short 的词最具象，故先判。
@@ -824,6 +856,63 @@ def explore_tier_of(action: Any) -> str | None:
     risk = str((action or {}).get("risk") or "").strip().lower() if isinstance(action, dict) else ""
     return risk if risk in EXPLORE_TIERS else DEFAULT_EXPLORE_TIER
 
+
+def _treasure_room(state: dict, key: str) -> bool:
+    """这件机缘还装得下吗（叠加上限）。前置掷定时要先看容量，
+    否则会出现「剧情写了得宝、背包却装不下」的叙事与状态打架。"""
+    if key not in TREASURE:
+        return False
+    cap = TREASURE_CAP.get(key, 99)
+    t = state.get("treasures") if isinstance(state.get("treasures"), dict) else {}
+    return _to_int(t.get(key), 0) < cap
+
+
+def pre_roll_fortune(state: dict, action_tag: str, tier: str | None) -> dict:
+    """探索的机缘与凶险**在 AI 写剧情之前**掷定，好让所得写进叙事。
+
+    旧写法是在 AI 写完后再掷：结果玩家常常背包里悄悄多了件法宝，
+    剧情里却仍是「两手空空」——「出门一趟什么也没发生」这一体感正源于此。
+    kind ∈ {death, treasure, none}；death 的处理不变（代码追加文本，不事先告知 AI）。
+    """
+    if action_tag != "explore":
+        return {"kind": "none"}
+    tk = tier or DEFAULT_EXPLORE_TIER
+    tspec = EXPLORE_TIERS.get(tk, EXPLORE_TIERS[DEFAULT_EXPLORE_TIER])
+    if tspec["death"] > 0 and random.random() < tspec["death"]:
+        return {"kind": "death"}
+    if tspec["drop"] > 0 and random.random() < tspec["drop"]:
+        key = roll_treasure(tk)
+        if _treasure_room(state, key):
+            return {"kind": "treasure", "key": key, "name": TREASURE[key]["name"]}
+        # 该件已满额 → 换一件还装得下的；实在装不下就当空手，免得剧情与行囊对不上
+        for other in TREASURE:
+            if other != key and _treasure_room(state, other):
+                return {"kind": "treasure", "key": other, "name": TREASURE[other]["name"]}
+    return {"kind": "none"}
+
+
+def fortune_prompt_note(fortune: dict) -> str | None:
+    """把前置掷定的机缘交给 AI 写进剧情。空手时也要它落下一条可追的线索。"""
+    f = fortune or {}
+    kind = f.get("kind")
+    if kind == "treasure":
+        return (
+            "【本轮机缘】\n"
+            f"天道已定：这一趟你会得到【{f.get('name')}】。\n"
+            "必须在 narrative 里写出它是如何到手的——何处所得、经过什么凶险或巧合——"
+            "并让玩家当场认出此物；不得写成含糊的「似有所得」。\n"
+            "此物已由天道记入行囊，delta 的 items_add 里**不得**重复添加。"
+        )
+    if kind == "none":
+        return (
+            "【本轮机缘】\n"
+            "天道已定：这一趟并无实物入袋——不要硬塞一件宝物。\n"
+            "但**绝不允许写成一无所获**：至少要落下一件可追的东西——"
+            "一个确切的地名、一个有名有姓的人、一则带时日的消息、或一件说不清来历的物件，"
+            "并在 thread_updates 里开一条新线把它挂上账。"
+        )
+    return None
+
 LIFESPAN_DEATH_TEXT = (
     "\n\n你忽然觉得手中的物事重得拿不住。窗外的日头还是那轮日头，" \
     "可你听见自己心跳的间隙越来越长——像更漏将尽时，最后几滴水的迟疑。\n\n" \
@@ -1022,6 +1111,10 @@ def check_lifespan_death(state: dict) -> bool:
 
 
 # ---------------------------------------------------------------- 史官压缩（远期记忆 → 前尘摘要）
+RECENT_KEEP = 4       # 交给 AI 的近期剧情条数（v3.6：2 → 4）
+# 两轮太短：AI 读不到自己四轮前埋下的因，也看不出自己已经重复了多少次——
+# 「有头无尾」有一半是这么来的。加到四轮，够连成一条因果链，又不至于撑爆提示词。
+
 MEMORY_KEEP = 8       # 长期记忆保留的明细条数
 MEMORY_TRIGGER = 12   # 超过此条数即触发史官压缩
 SUMMARY_MAX = 400     # 前尘摘要字数上限
@@ -1418,14 +1511,132 @@ def ensure_thread_choice(choices: list, state: dict) -> tuple[list, bool]:
     threads = state.get("threads") or []
     if not threads or len(choices) < 3:
         return choices, False
-    if _choice_hits_thread(choices, threads):
+    turn = _to_int(state.get("turn"), 0)
+    # 逾期线优先：即便选项里沾了线索的字，也不算「已经照顾到了」——
+    # 沾字的选项可以每轮都给、每轮都无结果，「追查某人」连点六轮正是这么来的。
+    overdue = [th for th in threads if turn > _to_int(th.get("due"), 0)]
+    if overdue:
+        th = sorted(overdue, key=lambda t: (_to_int(t.get("due"), 0), _to_int(t.get("id"), 0)))[0]
+        pool = THREAD_CLOSE_TPL
+    elif not _choice_hits_thread(choices, threads):
+        th = sorted(threads, key=lambda t: (_to_int(t.get("last"), 0), _to_int(t.get("id"), 0)))[0]
+        pool = THREAD_RECALL
+    else:
         return choices, False
-    # 还最久未触及的那条债
-    th = sorted(threads, key=lambda t: (_to_int(t.get("last"), 0), _to_int(t.get("id"), 0)))[0]
-    tpl, tag, risk = THREAD_RECALL.get(th.get("cat")) or THREAD_RECALL[DEFAULT_THREAD_CAT]
+    tpl, tag, risk = pool.get(th.get("cat")) or pool[DEFAULT_THREAD_CAT]
     text = tpl.format(str(th.get("title", ""))[:8])[:24]
     out = [dict(c) for c in choices[:2]]
     out.append({"id": "ABC"[len(out)], "text": text, "risk": risk, "tag": tag})
+    return out, True
+
+
+_PHRASE_PUNCT_RE = re.compile(r"[\s，,。.、·・\-—_（）()《》〈〉\[\]【】\"'“”‘’：:；;！!？?~～]+")
+_CHOICE_PREFIX_RE = re.compile(r"^[ABCabc]\s*")
+
+
+def _norm_phrase(s: Any) -> str:
+    """短语归一化：去标点空白，并剥掉选项前缀（「C 追查某人」→「追查某人」）。"""
+    t = _CHOICE_PREFIX_RE.sub("", str(s or "").strip())
+    return _PHRASE_PUNCT_RE.sub("", t)
+
+
+def same_pursuit(a: Any, b: Any) -> bool:
+    """两句话是不是还在追同一件事。
+
+    与认人、认线同一套哲学：不做编辑距离，只看连续 2 字片段的重合比例。
+    宁可漏判（少逼一次），不可误判（把两件无关的事算成同一件，平白催玩家收手）。
+    """
+    x, y = _norm_phrase(a), _norm_phrase(b)
+    if not x or not y:
+        return False
+    if x == y or x in y or y in x:
+        return True
+    if len(x) < 2 or len(y) < 2:
+        return False
+    short, long_ = (x, y) if len(x) <= len(y) else (y, x)
+    frags = list({short[i:i + 2] for i in range(len(short) - 1)})
+    if not frags:
+        return False
+    hit = sum(1 for f in frags if f in long_)
+    return hit / len(frags) >= STALL_SIM_RATIO
+
+
+def update_stall(state: dict, action_text: str) -> dict:
+    """更新「玩家是不是还在追同一件事」的计数。
+
+    必须在生成剧情**之前**调用——本轮的提示词要读到这个数，才知道该不该逼结果。
+    """
+    key = _norm_phrase(action_text)[:STALL_KEY_MAX]
+    prev = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+    if key and same_pursuit(key, prev.get("key", "")):
+        count = _to_int(prev.get("count"), 0) + 1
+        label = str(prev.get("label") or "")[:STALL_LABEL_MAX] or key[:STALL_LABEL_MAX]
+    else:
+        count = 1 if key else 0
+        label = key[:STALL_LABEL_MAX]
+    cur = {"key": key, "count": count, "label": label}
+    state["stall"] = cur
+    return cur
+
+
+def update_dry(state: dict, action_tag: str, gained: bool) -> int:
+    """连续「出门却一无所获」的轮数——覆盖玩家每轮换个说法、文字指纹抓不住的情形
+    （典型：挖石函，选项每轮都换，但结果永远是「还差一点」）。
+
+    只有 explore / fight 计入：打坐本就该没产出，不算空转。
+    gained = 本轮是否有实质产出（得宝、斗法、人物互动、了结线索、濒死都算）。
+    """
+    if action_tag not in DRY_TAGS or gained:
+        state["dry"] = 0
+        return 0
+    n = _to_int(state.get("dry"), 0) + 1
+    state["dry"] = n
+    return n
+
+
+def stall_level(state: dict) -> int:
+    """当前追索停滞的严重程度：文本指纹与空转连击取大者。"""
+    stall = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+    return max(_to_int(stall.get("count"), 0), _to_int(state.get("dry"), 0))
+
+
+def stall_prompt_note(state: dict) -> str | None:
+    """追索停滞到第几轮后，给 AI 下的死命令。未达阈值返回 None。"""
+    n = stall_level(state)
+    if n < STALL_FORCE_TURNS:
+        return None
+    stall = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+    label = str(stall.get("label") or "")[:STALL_LABEL_MAX] or "眼下这件事"
+    return (
+        "【追索已滞】\n"
+        f"这是玩家第 {n} 轮在追同一件事（{label}），前几轮都没能了结。"
+        "本轮必须给这件事一个交代，以下三选一：\n"
+        "· 办成了——写明结果，同时写明代价（受伤、破财、欠下人情、错过时机，至少占一样）；\n"
+        "· 断干净了——写出「为何再也追不下去」，并在 thread_updates 里 close 掉它，"
+        "同时给玩家一个具体的替代去向（人名、地名、去处）；\n"
+        "· 换来确凿情报——人没找到也行，但必须落下一个可核对的东西：姓名、地点、时日、物件。\n"
+        "**严禁**再把本轮写成「一无所获、线索又断了」——那已是第 "
+        f"{n} 次让玩家空手而归，属于叙事失败。\n"
+        "若本轮仍未了结，天道会自行把这件事划去，玩家将再也接不回这条线。"
+    )
+
+
+def ensure_resolve_choice(choices: list, state: dict) -> tuple[list, bool]:
+    """追索滞到阈值时，确保选项里有一条「罢手 / 改道」的出口。
+
+    AI 若已主动写了这类选项就不动它；否则替换第三条。
+    没有这条出口，玩家想抽身时只能靠自由输入——而大多数玩家不会想到要输入「我不找了」。
+    """
+    if len(choices) < 3 or stall_level(state) < STALL_FORCE_TURNS:
+        return choices, False
+    for c in choices:
+        if any(w in str((c or {}).get("text", "")) for w in RESOLVE_WORDS):
+            return choices, False
+    stall = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+    label = str(stall.get("label") or "")[:STALL_LABEL_MAX] or "此事"
+    out = [dict(c) for c in choices[:2]]
+    out.append({"id": "ABC"[len(out)], "text": f"就此罢手，另寻{label}以外的出路"[:24],
+                "risk": "low", "tag": "other"})
     return out, True
 
 
@@ -1543,7 +1754,7 @@ def sanitize_state(raw: dict) -> dict:
     memory_summary = _ms.strip()[:SUMMARY_MAX] if isinstance(_ms, str) else ""
 
     recent = []
-    for r in (raw.get("recent") or [])[:2]:
+    for r in (raw.get("recent") or [])[:RECENT_KEEP]:
         if isinstance(r, dict):
             recent.append({
                 "action": str(r.get("action", ""))[:40],
@@ -1650,6 +1861,9 @@ def sanitize_state(raw: dict) -> dict:
         "calm_streak": _int(raw.get("calm_streak"), 0, 999, 0),   # 连续平静轮数（推断 downtime 用）
         # ---- 未决之事（v3.5）：悬而未决的线索，与它们了结后的大事记 ----
         "threads": sanitize_threads(raw.get("threads")),
+        # ---- 追索停滞（v3.6）：玩家是不是还在追同一件事、连着几轮没有产出 ----
+        "stall": sanitize_stall(raw.get("stall")),
+        "dry": _int(raw.get("dry"), 0, 99, 0),
         "chronicle": sanitize_chronicle(raw.get("chronicle")),
     }
 
@@ -1675,6 +1889,17 @@ def sanitize_threads(raw: Any) -> list:
             "note": "".join(str(t.get("note", "")).split())[:THREAD_NOTE_MAX],
         })
     return out
+
+
+def sanitize_stall(raw: Any) -> dict:
+    """追索计数白名单：只留 key / count / label，数值一律钳制。老档缺键 → 空计数。"""
+    if not isinstance(raw, dict):
+        return {"key": "", "count": 0, "label": ""}
+    return {
+        "key": "".join(str(raw.get("key", "")).split())[:STALL_KEY_MAX],
+        "count": clamp(_to_int(raw.get("count"), 0), 0, 999),
+        "label": "".join(str(raw.get("label", "")).split())[:STALL_LABEL_MAX],
+    }
 
 
 def sanitize_chronicle(raw: Any) -> list:
@@ -2240,6 +2465,11 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 18. thread_updates 中 op 只能是 open / advance / close；title 沿用已有线索的名字（照抄【未决之事】
     里的写法），开新线才写新名，2~8 字。**不得把已在册的线索换个名字再开一条**——
     那等于把一件悬事拆成两件，系统也会把它并回原线；note 一句话写近况或结果，20 字以内。
+19. 若收到【追索已滞】：玩家已连追同一件事数轮仍无结果，本轮必须给这件事一个交代——
+    办成（并付出代价）/ 断干净（写明为何追不下去并 close 它）/ 换来确凿情报（姓名、地点、时日、物件），
+    三选一。**严禁再写「一无所获、线索又断了」**。继续拖延会被天道强行收场，此事从此再无下文。
+20. 若收到【本轮机缘】：写明得到某物，就必须真把它写进叙事（何处所得、经过什么）；
+    写明「并无实物入袋」，就不得再凭空赠宝，但仍须留下一条可追的线索，否则这一轮等于没发生过。
 
 【输出 json 结构】
 {
@@ -2276,7 +2506,8 @@ def build_state_brief(state: dict) -> dict:
 
 
 def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bool = False,
-                      days: int | None = None) -> str:
+                      days: int | None = None, stall_msg: str | None = None,
+                      fortune: dict | None = None) -> str:
     seg = []
     seg.append("【当前状态】\n" + json.dumps(build_state_brief(state), ensure_ascii=False, indent=1))
     if state.get("memory_summary"):
@@ -2355,6 +2586,12 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
             "narrative 必须覆盖这段时间——写的是「这段时间里发生的事」，"
             "不是按下选项的那一瞬间；不得出现与该跨度相矛盾的时间表述。"
         )
+    if fortune is not None:
+        fnote = fortune_prompt_note(fortune)
+        if fnote:
+            seg.append(fnote)
+    if stall_msg:
+        seg.append(stall_msg)
     if root_newly:
         seg.append(f"（特别提示：本轮玩家灵根初次显现——{state.get('spirit_root')}，请在剧情中自然揭示这一事实。）")
     seg.append(
@@ -2588,7 +2825,8 @@ def _slice_text(t, size=24):
 
 
 def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_newly: bool = False,
-                              forced_event: str | None = None, days: int | None = None):
+                              forced_event: str | None = None, days: int | None = None,
+                              stall_msg: str | None = None, fortune: dict | None = None):
     """real 模式流式生成。yield ("delta", 增量文本) / ("retry", None)。
     生成器 return (data, meta)：流式+校验成功 → AI 数据；否则降级 generate_scene（含重试与兜底）。"""
     t0 = time.time()
@@ -2596,7 +2834,9 @@ def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_n
     try:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly, days)},
+            {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly,
+                                                          days=days, stall_msg=stall_msg,
+                                                          fortune=fortune)},
         ]
         if forced_event:
             messages.append({"role": "user", "content": forced_event})
@@ -2635,7 +2875,8 @@ def _narrative_events_from_ai(state: dict, action: dict, trial_text: str, root_n
     except Exception:
         pass  # 流式失败（断流/解析/校验）→ 静默降级
     yield ("retry", None)
-    return generate_scene(state, action, trial_text, root_newly, days=days)
+    return generate_scene(state, action, trial_text, root_newly, days=days,
+                          stall_msg=stall_msg, fortune=fortune)
 
 
 def _get_client():
@@ -2668,7 +2909,8 @@ def _validate_ai_output(data: Any) -> None:
 
 
 def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool = False,
-                   forced_event: str | None = None, days: int | None = None) -> tuple[dict, dict]:
+                   forced_event: str | None = None, days: int | None = None,
+                   stall_msg: str | None = None, fortune: dict | None = None) -> tuple[dict, dict]:
     """AI 生成 → 解析校验 → 失败错误回喂重试 1 次 → 仍失败走兜底事件池。
     forced_event 非空时（闭门造车达阈值）：演武路径直接给外界打扰事件，真天道路径把指令塞进 prompt。"""
     t0 = time.time()
@@ -2683,7 +2925,9 @@ def generate_scene(state: dict, action: dict, trial_text: str, root_newly: bool 
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly, days)},
+        {"role": "user", "content": build_user_prompt(state, action, trial_text, root_newly,
+                                                      days=days, stall_msg=stall_msg,
+                                                      fortune=fortune)},
     ]
     if forced_event:
         messages.append({"role": "user", "content": forced_event})
@@ -2968,7 +3212,7 @@ def _ending_payload(state: dict, action_text: str) -> dict:
     state["memory"].append(memory_line)
     state["memory"] = state["memory"][-20:]
     state["recent"].append({"action": action_text, "narrative": narrative[:400]})
-    state["recent"] = state["recent"][-2:]
+    state["recent"] = state["recent"][-RECENT_KEEP:]
     update_style_echo(state, narrative)
     try:
         if compress_memory(state):
@@ -3022,7 +3266,9 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
                       action_tag: str = "other", risk_roll: float | None = None,
                       tier: str | None = None, short: bool = False,
                       span: str | None = None, trial: dict | None = None,
-                      pre_roll: tuple | None = None):
+                      pre_roll: tuple | None = None, fortune_pre: dict | None = None):
+    """fortune_pre：探索机缘的前置掷点（v3.6）。
+    注意别叫 fortune——本函数里 pre_roll 解包出来的第三个值就叫 fortune（是否奇遇）。"""
     """AI/演武数据 → 钳制应用 delta → 濒死 → 选项 → 江湖人物/文风回声 → 簿记 → 史官压缩。
     /api/act 与 /api/act/stream 共用，保证两路簿记永不分叉。
     action_tag 驱动修炼节奏（见 cultivate_multiplier），必须已由 infer_action_tag 归一化。
@@ -3116,18 +3362,21 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     if action_tag == "explore" and not state.get("dead"):
         tspec = EXPLORE_TIERS.get(tier or DEFAULT_EXPLORE_TIER, EXPLORE_TIERS[DEFAULT_EXPLORE_TIER])
         meta["explore"] = {"tier": tier or DEFAULT_EXPLORE_TIER, "label": tspec["label"]}
-        if tspec["death"] > 0 and random.random() < tspec["death"]:
+        # v3.6：机缘已在调 AI **之前**掷定（pre_roll_fortune），此处只照单兑现，绝不重掷——
+        # 重掷一次，剧情里写的所得与行囊里的所得当场分家，玩家又会觉得「白跑一趟」。
+        f = fortune_pre if isinstance(fortune_pre, dict) else pre_roll_fortune(state, action_tag, tier)
+        if f.get("kind") == "death":
             # 探索陨落：与寿元判定彼此独立的风险来源（硬红线 0.4%）
             state["dead"] = True
             meta["explore_death"] = True
             narrative = narrative + EXPLORE_DEATH_TEXT
             memory_line = memory_line or f"出行遇险，{state['age']}岁殒命半途"
-        elif tspec["drop"] > 0 and random.random() < tspec["drop"]:
-            key = roll_treasure(tier or DEFAULT_EXPLORE_TIER)   # 稀有件只有高风险档能出
-            spec_t = TREASURE[key]
+        elif f.get("kind") == "treasure":
             # 所有机缘物件（**含灵丹**）统一入背包：灵丹不再即时加修为，
             # 须由玩家主动服用（handle_use_elixir）才转化为限时效率 buff。
-            if _add_treasure(state, key, 1) > 0:
+            key = f["key"]
+            spec_t = TREASURE.get(key)
+            if spec_t and _add_treasure(state, key, 1) > 0:
                 meta["treasure"] = {"key": key, "name": spec_t["name"], "qty": 1}
                 memory_line = memory_line or f"得{spec_t['name']}"
 
@@ -3152,6 +3401,29 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     expired = expire_overdue_threads(state)
     choices = normalize_choices(data.get("choices"), state)
     choices, recall_used = ensure_thread_choice(choices, state)
+    # ---- 追索停滞：逼到第 5 轮仍无结果 → 代码收场，划去此事并强制换场 ----
+    took_over = False
+    if stall_level(state) >= STALL_TAKEOVER_TURNS and not thread_res["closed"]:
+        took_over = True
+        _s = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+        label = str(_s.get("label") or "")[:STALL_LABEL_MAX] or "此事"
+        line = random.choice(STALL_TAKEOVER_LINES)
+        turn_now = _to_int(state.get("turn"), 0)
+        chronicle = state.setdefault("chronicle", [])
+        chronicle.append(f"第{turn_now}轮 · {label}：{line}"[:CHRONICLE_LINE_MAX])
+        state["chronicle"] = chronicle[-CHRONICLE_MAX:]
+        hit = find_thread(state.get("threads") or [], label)
+        if hit is not None:
+            state["threads"].remove(hit)
+        narrative = narrative + STALL_TAKEOVER_TEXT
+        memory_line = memory_line or f"{label}{line}"
+        if len(choices) >= 3:
+            choices = [dict(c) for c in choices[:2]] + [
+                {"id": "C", "text": "自此改道，另作打算", "risk": "low", "tag": "other"}]
+        state["stall"] = {"key": "", "count": 0, "label": ""}
+        state["dry"] = 0
+        meta["stall_takeover"] = {"label": label, "line": line}
+    choices, resolve_used = ensure_resolve_choice(choices, state)
     state["turn"] += 1
 
     # ---- 场景节奏：为**下一轮**定调（纯代码推断，不调 AI）
@@ -3164,10 +3436,20 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     meta["threads"] = {
         "opened": thread_res["opened"], "advanced": thread_res["advanced"],
         "closed": thread_res["closed"], "dropped": thread_res["dropped"],
-        "expired": expired, "recall_used": recall_used,
+        "expired": expired, "recall_used": recall_used, "resolve_used": resolve_used,
         "list": [{"title": t.get("title"), "cat": t.get("cat"), "open": t.get("open"),
                   "due": t.get("due")} for t in (state.get("threads") or [])],
     }
+    # ---- 追索停滞计数（v3.6）：本轮有没有拿到「实质产出」决定下轮要不要逼结果 ----
+    # 杂物线索（残药纸、旧布囊之类）不算产出——正是这类碎片让「追查」看起来一直在推进。
+    gained = bool(
+        meta.get("treasure") or meta.get("explore_death") or meta.get("lifespan_death")
+        or trial or npc_events or thread_res["closed"] or near_death_flag
+    )
+    dry = update_dry(state, action_tag, gained)
+    _s = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+    meta["stall"] = {"count": _to_int(_s.get("count"), 0), "label": _s.get("label", ""),
+                     "dry": dry, "level": stall_level(state), "takeover": took_over}
 
     # ---- ⑦ 灵丹 buff 倒计时：只在「真正修行」的回合递减（探索回合不消耗）
     # 否则反复出门探索即可无限续 buff，等于绕开闭关白拿效率。
@@ -3188,7 +3470,7 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         state["memory"].append(memory_line)
         state["memory"] = state["memory"][-20:]
     state["recent"].append({"action": action_text, "narrative": narrative[:400]})
-    state["recent"] = state["recent"][-2:]
+    state["recent"] = state["recent"][-RECENT_KEEP:]
     update_style_echo(state, narrative)
     meta["age"] = age_info(state)
     try:
@@ -3318,12 +3600,18 @@ def act(req: ActReq):
         # ④' 天数前置（v3.4）：先掷出这一轮要过多久，再让 AI 按此写剧情。
         #    随机数相对顺序不变（trial 已掷完、AI 不耗随机），数值配平不受影响。
         pre_roll = action_exp(action_tag, tier, span == "short", span)
+        # ④'' 追索计数与机缘同样前置（v3.6）：都要在 AI 落笔之前定下来——
+        #     计数要写进提示词（否则 AI 不知道自己已经重复了多少轮），
+        #     机缘要写进剧情（否则行囊悄悄进账、剧情里两手空空）。
+        update_stall(state, action_text)
+        stall_msg = stall_prompt_note(state)
+        fortune = pre_roll_fortune(state, action_tag, tier)
         forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
         data, meta = generate_scene(state, action, trial_text, root_newly, forced_event,
-                                    days=pre_roll[1])
+                                    days=pre_roll[1], stall_msg=stall_msg, fortune=fortune)
         narrative, choices, delta_applied, near_death_flag, npc_events = \
             _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, span=span,
-                              trial=trial, pre_roll=pre_roll)
+                              trial=trial, pre_roll=pre_roll, fortune_pre=fortune)
         _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
         return {
@@ -3406,11 +3694,16 @@ def act_stream(req: ActReq):
                 span = span_of_cultivate(action)                            # 修行粒度（short/medium/long）
                 # 天数前置（v3.4）：与 /api/act 同一顺序，两路不得分叉
                 pre_roll = action_exp(action_tag, tier, span == "short", span)
+                # 追索计数与机缘前置（v3.6）：与 /api/act 同序，两路不得分叉
+                update_stall(state, action_text)
+                stall_msg = stall_prompt_note(state)
+                fortune = pre_roll_fortune(state, action_tag, tier)
                 forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
                 if API_KEY and _OPENAI_OK:
                     # ④ 流式真天道：边生成边推
                     it = _narrative_events_from_ai(state, action, trial_text, root_newly,
-                                                   forced_event, days=pre_roll[1])
+                                                   forced_event, days=pre_roll[1],
+                                                   stall_msg=stall_msg, fortune=fortune)
                     data = meta = None
                     while True:
                         try:
@@ -3438,7 +3731,7 @@ def act_stream(req: ActReq):
             # ⑤~⑨ 与 /api/act 完全共用的后处理（action_tag 已在上方闭门判定处算好）
             narrative, choices, delta_applied, near_death_flag, npc_events = \
                 _postprocess_turn(state, data, meta, action_text, action_tag, tier=tier, span=span,
-                              trial=trial, pre_roll=pre_roll)
+                                  trial=trial, pre_roll=pre_roll, fortune_pre=fortune)
             _merge_fx(delta_applied, event_fx)  # 战斗/天机事件数值并入飘字（state 已应用）
 
             # 流式叙事是增量的，done 里带完整文本供前端静默校正

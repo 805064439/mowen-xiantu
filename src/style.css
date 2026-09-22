@@ -411,6 +411,16 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 .thread-row.overdue .th-when{color:var(--seal);}
 .th-note{font-size:10.5px; color:var(--muted); letter-spacing:.5px; flex:1 1 100%;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+
+/* ---------- 久追未果（v3.6 追索停滞） ---------- */
+.drawer-stall{margin-top:12px; padding:8px 10px; border-top:1px dashed var(--line);
+  border-left:2px solid var(--seal);}
+.stall-row{display:flex; align-items:center; flex-wrap:wrap; gap:6px;}
+.st-label{font-size:13.5px; font-weight:700; color:var(--seal); letter-spacing:1px; flex:none;
+  max-width:9em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.st-count{font-size:10px; color:var(--seal); border:1px solid rgba(164,74,58,.45);
+  padding:0 6px; border-radius:99px; letter-spacing:1px; flex:none;}
+.st-warn{font-size:10.5px; color:var(--muted); letter-spacing:.5px; flex:1 1 100%;}
 .drawer-chronicle{margin-top:10px; padding-top:8px; border-top:1px dashed var(--line);}
 .chr-line{font-size:10.5px; color:var(--muted); letter-spacing:.5px; margin:4px 0;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}

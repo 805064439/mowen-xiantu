@@ -328,6 +328,10 @@ export const EXPLORE_TIERS: Record<string, ExploreTierInfo> = {
   },
 };
 
+/* ---- 追索停滞（v3.6）—— 与后端同名常量必须同值，前端据此把「原地打转」明示给玩家 ---- */
+export const STALL_FORCE_TURNS = 3;      // 连追第几轮起，本轮必须给这件事一个交代
+export const STALL_TAKEOVER_TURNS = 5;   // 第几轮仍无结果，由天道自行划去
+
 /** 风险档 → 探索档位（与后端 explore_tier_of 同义：低/中/高即档位） */
 export function exploreTierOfRisk(risk?: string): ExploreTierInfo {
   return EXPLORE_TIERS[risk ?? ""] ?? EXPLORE_TIERS.mid;

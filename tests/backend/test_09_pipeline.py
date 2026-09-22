@@ -135,11 +135,13 @@ class TestPostprocessPipeline:
 
     def test_recent_window_slides(self, engine, base_state):
         s = engine.sanitize_state({**base_state, "turn": 5})
-        for i in range(5):
+        for i in range(6):
             engine._postprocess_turn(s, {"delta": {}, "choices": [], "narrative": f"第{i}轮",
                                          "memory": f"m{i}"}, {}, f"行动{i}")
-        assert len(s["recent"]) == 2
-        assert s["recent"][-1]["narrative"] == "第4轮"
+        assert len(s["recent"]) == engine.RECENT_KEEP
+        assert s["recent"][-1]["narrative"] == "第5轮"
+        # v3.6：窗口内必须还留着更早的轮次，AI 才连得上因果（两轮时看不到自己的前因）
+        assert s["recent"][0]["narrative"] == f"第{6 - engine.RECENT_KEEP}轮"
 
     def test_memory_compressed_when_long(self, engine, base_state):
         """写入后若超出史官阈值，明细被压缩到保留条数，并沉淀为前尘摘要。"""
