@@ -644,6 +644,20 @@ STALL_TAKEOVER_LINES = (
 )
 STALL_TAKEOVER_LINE_FALLBACK = "再无下落，此事就此划去"
 
+# 收场后给玩家看的「收心」去处：文案既已说「此事到此为止」，选项就不能再递一张车票。
+# 事故现场（2026-09-23 线上实测）：正文写「再往下只有同一个下落」，选项第一条却是
+# 「往柳家渡访那老汉故邻」——同一屏里一边划掉这条线、一边把玩家往下一站送，
+# 比不收场更刺眼：玩家会认为「结果」只是换了句话敷衍。
+# 固定池、按序取、**不掷骰**——随机调用顺序是这个项目的高压线（见 test_13 的 _scripted）。
+STALL_TAKEOVER_SWAPS = (
+    {"text": "就地静修数日，把这一路的所得化入己身", "risk": "low", "tag": "cultivate"},
+    {"text": "往别处走走，看看有无旁的机缘", "risk": "mid", "tag": "explore"},
+    {"text": "觅一处清静地歇息，暂不问外事", "risk": "low", "tag": "rest"},
+)
+
+# 选项里的「递车票」措辞：收场之后，这类选项一律不再给玩家看。
+STALL_TICKET_WORDS = ("追", "寻", "访", "问", "探", "查", "线索", "下落")
+
 # 「换乘」上限：AI 最常见的拖延手法是「此人不在此处，往下一处去了」——
 # 每轮都给确凿情报（姓名+地名），但每张车票都指向下一站。
 # 一轮里同时「了结一条旧线 + 新开一条指向同一目标的新线」就记一次换乘；
@@ -1784,6 +1798,46 @@ def ensure_resolve_choice(choices: list, state: dict) -> tuple[list, bool]:
     out.append({"id": "ABC"[len(out)], "text": f"就此罢手，另寻{label}以外的出路"[:24],
                 "risk": "low", "tag": "other"})
     return out, True
+
+
+def _still_pursuing(text: str, label: str, action_text: str) -> bool:
+    """这条选项是不是还在追那条**已经收掉的**线（或又在递下一张车票）。
+
+    两条判据，宁可多换：认得出是同一件事（same_pursuit），或措辞本身就是出门问人
+    （追 / 寻 / 访 / 问 / 探 / 查 / 线索 / 下落）。
+    """
+    t = str(text or "")
+    if not t:
+        return False
+    if same_pursuit(t, label) or same_pursuit(t, action_text):
+        return True
+    return any(w in t for w in STALL_TICKET_WORDS)
+
+
+def takeover_choices(choices: list, label: str, action_text: str) -> list:
+    """收场后的选项：不再递车票，只留「收心」与「改道」。
+
+    前两条里凡仍在追本线的一律丢掉，从 STALL_TAKEOVER_SWAPS 按序补齐；
+    第三条固定是改道出口（与 ensure_resolve_choice 的措辞同源，玩家容易认）。
+    不改动的话，玩家读到的正文说「下落已明」，点下去的选项却把自己送去下一站。
+    """
+    kept: list = []
+    pool = [dict(c) for c in STALL_TAKEOVER_SWAPS]
+    for c in list(choices or [])[:2]:
+        if not isinstance(c, dict):
+            continue
+        if _still_pursuing(c.get("text", ""), label, action_text):
+            continue
+        kept.append(dict(c))
+    while len(kept) < 2 and pool:
+        kept.append(pool.pop(0))
+    out = kept[:2]
+    while len(out) < 2:                       # 极端兜底：AI 一条可用选项都没给
+        out.append({"text": "自此收心，另作打算", "risk": "low", "tag": "other"})
+    for i, c in enumerate(out):
+        c["id"] = "ABC"[i]
+    out.append({"id": "C", "text": "自此改道，另作打算", "risk": "low", "tag": "other"})
+    return out
 
 
 # ---- 句内防复读（v3.7）：开篇已在【文风禁用】里禁了，但真正的复读发生在段落内部 ----
@@ -3642,9 +3696,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
             state["threads"].remove(hit)
         narrative = narrative + STALL_TAKEOVER_TEXT
         memory_line = memory_line or f"{label}{line}"
-        if len(choices) >= 3:
-            choices = [dict(c) for c in choices[:2]] + [
-                {"id": "C", "text": "自此改道，另作打算", "risk": "low", "tag": "other"}]
+        # 收场文案说「下落已明」，选项就不能还指着下一站（2026-09-23 线上实测的残留矛盾）
+        choices = takeover_choices(choices, label, action_text)
         state["stall"] = {"key": "", "count": 0, "label": ""}
         state["dry"] = 0
         meta["stall_takeover"] = {"label": label, "line": line}

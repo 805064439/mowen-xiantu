@@ -115,8 +115,11 @@ class TestLastClueLine:
 # ---------------------------------------------------------------- 接管
 
 def _turn(engine, s, action="追查溪畔女子", tag="explore", thread_updates=None,
-          chronicle_preset=None):
-    """跑一轮 _postprocess_turn；thread_updates 模拟 AI 的申报。"""
+          chronicle_preset=None, with_choices=False):
+    """跑一轮 _postprocess_turn；thread_updates 模拟 AI 的申报。
+
+    with_choices=True 时额外返回本轮的选项（收场口径要连选项一起断言）。
+    """
     if chronicle_preset is not None:
         s["chronicle"] = list(chronicle_preset)
     data = {
@@ -132,7 +135,9 @@ def _turn(engine, s, action="追查溪畔女子", tag="explore", thread_updates=
         data["thread_updates"] = thread_updates
     meta = {}
     engine.update_stall(s, action)
-    engine._postprocess_turn(s, data, meta, action, tag, tier="mid")
+    out = engine._postprocess_turn(s, data, meta, action, tag, tier="mid")
+    if with_choices:
+        return meta, out[1]
     return meta
 
 
@@ -212,6 +217,82 @@ class TestTakeover:
         assert s["stall"]["count"] == 0
         assert s["dry"] == 0
         assert s["hop"] == 0
+
+
+# ---------------------------------------------------------------- 收场后的选项
+
+class TestTakeoverChoices:
+    """收场之后不许再递车票。
+
+    2026-09-23 线上实测的残留矛盾：正文写「再往下只有同一个下落」，选项第一条却是
+    「往柳家渡访那老汉故邻」——同一屏里一边把这条线划掉、一边把玩家送去下一站，
+    玩家只会觉得「结果」是换了句话敷衍。
+
+    _turn 的默认三条是 A「再追一程」/ B「就地调息」/ C「追查溪畔女子」：
+    前两条里 A 指着这条线，B 是无害的回头路。
+    """
+
+    def _forced(self, engine, s):
+        for _ in range(engine.STALL_TAKEOVER_TURNS):
+            engine.update_stall(s, "追查溪畔女子")
+
+    def test_ticket_choice_replaced_and_pool_supplies(self, engine, base_state):
+        s = base_state
+        s["threads"] = [_thread("溪畔女子", "追查中", 1)]
+        self._forced(engine, s)
+        meta, choices = _turn(engine, s, with_choices=True,
+                              thread_updates=[{"op": "open", "title": "某条新线", "note": "x"}])
+        assert meta["stall"]["takeover"] is True, "先得真收场"
+        texts = [c["text"] for c in choices]
+        assert "再追一程" not in texts, f"还在递车票：{texts}"
+        pool = [t["text"] for t in engine.STALL_TAKEOVER_SWAPS]
+        assert texts[1] in pool, f"缺的一条没从池里补上：{texts}"
+
+    def test_harmless_choice_kept_with_span(self, engine, base_state):
+        """无害的回头路不该被误伤，span 也不能丢（重建选项时最容易掉的字段）。"""
+        s = base_state
+        s["threads"] = [_thread("溪畔女子", "追查中", 1)]
+        self._forced(engine, s)
+        meta, choices = _turn(engine, s, with_choices=True,
+                              thread_updates=[{"op": "open", "title": "某条新线", "note": "x"}])
+        assert meta["stall"]["takeover"] is True
+        assert choices[0]["text"] == "就地调息", f"误伤了无害选项：{choices[0]}"
+        assert choices[0].get("span") == "short", "丢掉 span 会让前端把「片刻」显示成「五年」"
+
+    def test_third_choice_is_way_out(self, engine, base_state):
+        s = base_state
+        s["threads"] = [_thread("溪畔女子", "追查中", 1)]
+        self._forced(engine, s)
+        meta, choices = _turn(engine, s, with_choices=True,
+                              thread_updates=[{"op": "open", "title": "某条新线", "note": "x"}])
+        assert choices[2]["text"] == "自此改道，另作打算"
+
+    def test_no_touch_before_takeover(self, engine, base_state):
+        """没到阈值就别动玩家的选项。"""
+        s = base_state
+        s["threads"] = [_thread("溪畔女子", "追查中", 1)]
+        meta, choices = _turn(engine, s, with_choices=True)
+        assert meta["stall"]["takeover"] is False
+        assert choices[0]["text"] == "再追一程", "接管前不该替换"
+
+    def test_all_tickets_pulls_pool_in_order(self, engine, base_state):
+        """两条都指着本线 → 按序从池里取两条，不掷骰。"""
+        raw = [{"id": "A", "text": "往北寻青芦渡", "risk": "mid", "tag": "explore"},
+               {"id": "B", "text": "再去问那老汉", "risk": "mid", "tag": "explore"}]
+        out = engine.takeover_choices(raw, "追查溪畔女子", "追查溪畔女子")
+        swaps = engine.STALL_TAKEOVER_SWAPS
+        assert out[0]["text"] == swaps[0]["text"]
+        assert out[1]["text"] == swaps[1]["text"]
+        assert out[2]["text"] == "自此改道，另作打算"
+
+    def test_deterministic(self, engine, base_state):
+        """同一输入两次结果一致——接管在随机流里插了 `random.choice` 会整体漂移。"""
+        raw = [{"id": "A", "text": "往南追访", "risk": "mid", "tag": "explore"},
+               {"id": "B", "text": "再探下落", "risk": "mid", "tag": "explore"}]
+        a = engine.takeover_choices(raw, "追查柳氏", "追查柳氏")
+        b = engine.takeover_choices(raw, "追查柳氏", "追查柳氏")
+        assert [c["text"] for c in a] == [c["text"] for c in b]
+        assert [c["id"] for c in a] == ["A", "B", "C"]
 
 
 # ---------------------------------------------------------------- 端到端：每站都走空
