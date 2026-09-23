@@ -1119,12 +1119,61 @@ MEMORY_KEEP = 8       # 长期记忆保留的明细条数
 MEMORY_TRIGGER = 12   # 超过此条数即触发史官压缩
 SUMMARY_MAX = 400     # 前尘摘要字数上限
 
-HISTORIAN_PROMPT = (
-    "你是修仙世界的史官，为一位修士的传记做摘要。请把【既有前尘】与【新增旧事】"
-    f"合写为一段连贯的史笔，{SUMMARY_MAX} 字以内，按时间线索组织，优先保留："
-    "重要人名与地名、恩怨与承诺、机缘与损失、修为境界变化、未了的线索。"
-    "文风简古，不必修饰。只输出一个 json 对象：{\"summary\": \"……\"}"
+# 摘要为什么要分栏：自由散文里人名、地名、债务揉成一团，AI 回头检索时什么都捞不出来，
+# 于是「上卷说过的话」在下卷里照样丢——这正是之前多条线索查无此人的由来。
+# 六栏是刻意挑的：少了「疑」（未了线索）就又会丢线，多了模型填不满、每栏都流于套话。
+SUMMARY_SECTIONS = (
+    ("人", "重要人名与其身份关系"),
+    ("地", "到过的地方与关键去处"),
+    ("债", "欠下的人情、结下的恩怨、许过的承诺"),
+    ("得", "所得机缘与所受损失"),
+    ("境", "境界与寿元的重大变化"),
+    ("疑", "至今没有下落的线索"),
 )
+SUMMARY_SECTION_KEYS = tuple(k for k, _ in SUMMARY_SECTIONS)
+SUMMARY_SECTION_MAX = 60   # 单栏字数上限（6 栏 × 60 < SUMMARY_MAX 400，才不会截掉末栏）
+
+HISTORIAN_PROMPT = (
+    "你是修仙世界的史官，为一位修士的传记做摘要。"
+    "请把【既有前尘】与【新增旧事】合并改写为分栏史笔，文风简古、不加修饰。\n"
+    + "\n".join(f"· 「{k}」{d}" for k, d in SUMMARY_SECTIONS)
+    + f"\n每栏不超过 {SUMMARY_SECTION_MAX} 字；无内容的一栏给空串，不要编造。"
+    "同一栏内用「；」分隔。不得把不同栏的内容互相串——"
+    "尤其「疑」只写至今没有下落的线索，已经有结果的移入「得」或直接删去。\n"
+    + "只输出一个 json 对象：{"
+    + ", ".join(f'"{k}": "……"' for k in SUMMARY_SECTION_KEYS)
+    + "}"
+)
+
+
+def _parse_summary(text: str) -> dict:
+    """把已存的前尘摘要拆回分栏。老档是散文（没有栏名）→ 整段落到「境」里，不致丢失。"""
+    out = {k: "" for k in SUMMARY_SECTION_KEYS}
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        head, sep, body = line.partition("：")
+        if not sep:
+            head, sep, body = line.partition(":")
+        key = head.strip()
+        if sep and key in out and body.strip():
+            out[key] = (out[key] + "；" + body.strip()) if out[key] else body.strip()
+    if not any(out.values()):
+        out["境"] = str(text or "").strip()[:SUMMARY_SECTION_MAX]
+    return out
+
+
+def _assemble_summary(parts: dict) -> str:
+    """分栏 → 带栏名的多行文本。带栏名正是为了下一次能被 `_parse_summary` 拆回来。"""
+    lines = []
+    if not isinstance(parts, dict):
+        return ""
+    for k in SUMMARY_SECTION_KEYS:
+        v = "".join(str(parts.get(k, "") or "").split())[:SUMMARY_SECTION_MAX]
+        if v:
+            lines.append(f"{k}：{v}")
+    return "\n".join(lines)[:SUMMARY_MAX]
 
 
 def _rule_summary(prev: str, old_lines: list) -> str:
@@ -1133,14 +1182,16 @@ def _rule_summary(prev: str, old_lines: list) -> str:
     return merged[-SUMMARY_MAX:]
 
 
-def _historian_summary(prev: str, old_lines: list) -> str:
-    """AI 史官合写前尘摘要；无 key / 失败 → 规则兜底。绝不抛异常。"""
+def _struct_summary(prev: str, old_lines: list) -> str:
+    """AI 史官按六栏改写，返回拼好的摘要；无 key / 失败 / 输出为空一律返回空串，由调用方兜底。"""
     if not (API_KEY and _OPENAI_OK):
-        return _rule_summary(prev, old_lines)
+        return ""
+    old_parts = _parse_summary(prev)
     try:
         seg = []
-        if prev:
-            seg.append("【既有前尘】\n" + prev)
+        have = "\n".join(f"{k}：{v}" for k, v in old_parts.items() if v)
+        if have:
+            seg.append("【既有前尘】\n" + have)
         seg.append("【新增旧事】\n" + "\n".join("· " + x for x in old_lines))
         resp = _get_client().chat.completions.create(
             model=MODEL,
@@ -1150,15 +1201,27 @@ def _historian_summary(prev: str, old_lines: list) -> str:
             ],
             response_format={"type": "json_object"},
             temperature=0.3,
-            max_tokens=300,
+            max_tokens=400,
         )
         data = _extract_json(resp.choices[0].message.content or "")
-        s = str(data.get("summary", "")).strip()
-        if s:
-            return s[:SUMMARY_MAX]
+        if not isinstance(data, dict):
+            return ""
+        merged = {}
+        for k in SUMMARY_SECTION_KEYS:
+            new = str(data.get(k) or "").strip()
+            # AI 的输出本就是合并后的全量；它漏写一栏时用旧值补，不能因为一次失手就丢档
+            merged[k] = new or str(old_parts.get(k) or "").strip()
+        if not any(merged.values()):
+            return ""
+        return _assemble_summary(merged)
     except Exception:
-        pass
-    return _rule_summary(prev, old_lines)
+        return ""
+
+
+def _historian_summary(prev: str, old_lines: list) -> str:
+    """AI 史官六栏合写前尘摘要；无 key / 失败 → 规则兜底。绝不抛异常。"""
+    s = _struct_summary(prev, old_lines)
+    return s if s else _rule_summary(prev, old_lines)
 
 
 def compress_memory(state: dict) -> bool:
@@ -1640,6 +1703,44 @@ def ensure_resolve_choice(choices: list, state: dict) -> tuple[list, bool]:
     return out, True
 
 
+# ---- 句内防复读（v3.7）：开篇已在【文风禁用】里禁了，但真正的复读发生在段落内部 ----
+# 「你沿着溪岸走了半日，只捡到一片残药纸」这类整句会被整句搬回来，玩家一眼就看穿。
+DEJA_MIN = 8            # 参与比对的句子最短字数（「他点点头」这种不该算复读）
+DEJA_MAX = 26           # 最长（过长的句几乎不会整句重现，记了也白占额度）
+DEJA_KEEP = 14          # 记住最近多少句
+DEJA_SHOW = 8           # 提示词里展示多少句
+DEJA_STATE_MAX = 40     # 白名单上限，防存档注进一整本书
+
+
+def _sentences(text: Any) -> list:
+    """切成符合长度条件的成句（去标点空白后落在 [DEJA_MIN, DEJA_MAX]）。"""
+    out = []
+    for raw in re.split(r"[。！？；\n\r]+", str(text or "")):
+        s = _PHRASE_PUNCT_RE.sub("", raw)
+        if DEJA_MIN <= len(s) <= DEJA_MAX:
+            out.append(s)
+    return out
+
+
+def deja_hits(state: dict, narrative: Any) -> list:
+    """本轮叙事里有多少句是照抄前几轮的。只作量化与体检，不改文案。"""
+    have = state.get("deja")
+    if not isinstance(have, list):
+        return []
+    return [s for s in _sentences(narrative) if s in have]
+
+
+def update_deja(state: dict, narrative: Any) -> list:
+    """把本轮的成句记入记忆，保留最近 DEJA_KEEP 句（同一句不重复入队）。"""
+    have = state.get("deja")
+    echo = [str(x)[:DEJA_MAX] for x in (have or []) if str(x).strip()]
+    for s in _sentences(narrative):
+        if s not in echo:
+            echo.append(s)
+    state["deja"] = echo[-DEJA_KEEP:]
+    return state["deja"]
+
+
 def update_style_echo(state: dict, narrative: str) -> None:
     """记下本轮开篇（去空白前 12 字），供下轮【文风禁用】防复读。"""
     head = "".join(str(narrative).split())[:12]
@@ -1759,6 +1860,10 @@ def sanitize_state(raw: dict) -> dict:
             recent.append({
                 "action": str(r.get("action", ""))[:40],
                 "narrative": str(r.get("narrative", ""))[:400],
+                # v3.7：轮次与本轮流逝天数。缺了这两个数，【最近剧情】只是一串散句——
+                # AI 分不出先后、也不知道隔了多久，补出的「因」常常落在「果」之后。
+                "turn": clamp(_to_int(r.get("turn"), 0), 0, 9999),
+                "days": clamp(_to_int(r.get("days"), 0), 0, 99999),
             })
 
     # 灵根：非法值置空（下次 act 自动重掷）
@@ -1810,6 +1915,8 @@ def sanitize_state(raw: dict) -> dict:
 
     # 文风回声（最近数轮开篇，防 AI 复读用）
     style_echo = [str(h)[:16] for h in (raw.get("style_echo") or [])[:8] if str(h).strip()]
+    # 成句记忆（v3.7）：登记最近写过的整句，供【句式禁用】比对
+    deja = [str(x)[:DEJA_MAX] for x in (raw.get("deja") or [])[-DEJA_STATE_MAX:] if str(x).strip()]
 
     # 机缘物件（探索所得功法/法宝）：只认表内键，且按叠加上限钳制
     treasures = {}
@@ -1837,6 +1944,7 @@ def sanitize_state(raw: dict) -> dict:
         "reincarnations": reincarnations,
         "npcs": npcs,
         "style_echo": style_echo,
+        "deja": deja[-DEJA_KEEP:],
         "pending_events": pending_events,
         "fail_streak": _int(raw.get("fail_streak"), 0, 20, 0),
         "cultivate_streak": _int(raw.get("cultivate_streak"), 0, STREAK_STORE_MAX, 0),  # 连修轮数（连击加成）
@@ -2470,6 +2578,10 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
     三选一。**严禁再写「一无所获、线索又断了」**。继续拖延会被天道强行收场，此事从此再无下文。
 20. 若收到【本轮机缘】：写明得到某物，就必须真把它写进叙事（何处所得、经过什么）；
     写明「并无实物入袋」，就不得再凭空赠宝，但仍须留下一条可追的线索，否则这一轮等于没发生过。
+21. 若收到【句式禁用】：列出的句子是最近几轮写过的原句，**严禁整句照抄**。
+    同一件事完全可以再写，但必须换句式、换用词、换视角；照抄即视为叙事失败。
+22. 【最近剧情】里的每条都带轮次与历时天数，那是确凿的先后次序：
+    不得让已发生的结果被推翻，也不得把相隔数月的两件事写成紧接着发生。
 
 【输出 json 结构】
 {
@@ -2536,6 +2648,13 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
     if state.get("style_echo"):
         lines = [f"· {h}……" for h in state["style_echo"]]
         seg.append("【文风禁用】以下开篇近期已用过，本轮开篇严禁与之相同或雷同：\n" + "\n".join(lines))
+    if state.get("deja"):
+        lines = [f"· {h}" for h in state["deja"][-DEJA_SHOW:]]
+        seg.append(
+            "【句式禁用】以下句子是最近几轮写过的原句，本轮严禁照抄。"
+            "同一件事可以再写，但必须换句式换用词；照抄即被视为叙事失败：\n"
+            + "\n".join(lines)
+        )
     threads = state.get("threads") or []
     if threads:
         turn_now = _to_int(state.get("turn"), 0)
@@ -2567,8 +2686,18 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
                 )
             )
     if state["recent"]:
-        lines = [f'（玩家：{r["action"]}）{r["narrative"]}' for r in state["recent"]]
-        seg.append("【最近剧情】\n" + "\n————\n".join(lines))
+        lines = []
+        for r in state["recent"]:
+            head = f'第{_to_int(r.get("turn"), 0)}轮'
+            spent = _to_int(r.get("days"), 0)
+            if spent:
+                head += f"（历时{spent}天）"
+            lines.append(f'【{head}】玩家：{r["action"]}\n{r["narrative"]}')
+        seg.append(
+            "【最近剧情】（按发生先后排列，注意轮次与各自历时——本轮要写的事必须接得上这些，"
+            "不得与已发生的结果矛盾，也不要把隔了数月的事写成紧接着发生）\n"
+            + "\n————\n".join(lines)
+        )
     pace = state.get("scene_pace") if state.get("scene_pace") in SCENE_PACE else DEFAULT_SCENE_PACE
     seg.append(f"【场景节奏】{SCENE_PACE_LABEL[pace]}（{pace}）——依此决定给出的选项，详见系统铁律。")
     atext = str(action.get("text", ""))[:60] or "（未言明的行动）"
@@ -3211,7 +3340,8 @@ def _ending_payload(state: dict, action_text: str) -> dict:
     state["turn"] += 1
     state["memory"].append(memory_line)
     state["memory"] = state["memory"][-20:]
-    state["recent"].append({"action": action_text, "narrative": narrative[:400]})
+    state["recent"].append({"action": action_text, "narrative": narrative[:400],
+                            "turn": _to_int(state.get("turn"), 0), "days": 0})
     state["recent"] = state["recent"][-RECENT_KEEP:]
     update_style_echo(state, narrative)
     try:
@@ -3469,7 +3599,13 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     if memory_line:
         state["memory"].append(memory_line)
         state["memory"] = state["memory"][-20:]
-    state["recent"].append({"action": action_text, "narrative": narrative[:400]})
+    # 句内复读量化（v3.7）：必须在本轮的成句入库**之前**算，否则本轮会命中自己。
+    _hits = deja_hits(state, narrative)
+    update_deja(state, narrative)
+    meta["deja"] = {"hits": len(_hits), "sample": _hits[:2],
+                    "kept": len(state.get("deja") or [])}
+    state["recent"].append({"action": action_text, "narrative": narrative[:400],
+                            "turn": _to_int(state.get("turn"), 0), "days": max(0, _to_int(days, 0))})
     state["recent"] = state["recent"][-RECENT_KEEP:]
     update_style_echo(state, narrative)
     meta["age"] = age_info(state)
