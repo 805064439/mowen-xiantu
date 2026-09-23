@@ -64,6 +64,7 @@ export interface GameState {
   /* ---- 追索停滞（v3.6）：同一件事连追数轮无果，由代码逼结果、再收场 ---- */
   stall?: { key?: string; count?: number; label?: string };  // 正在追的事与已追轮数
   dry?: number;                        // 连续「出门却一无所获」的轮数
+  hop?: number;                        // 换乘次数：目标被「此人不在此处」搬到下一站的次数
 }
 
 /** 寿元信息（engine_meta.age）——状态栏直接渲染 */
@@ -185,6 +186,7 @@ export interface EngineMeta {
   };
   stall?: {                    // v3.6 追索停滞：连追同一件事多少轮了
     count?: number; label?: string; dry?: number; level?: number; takeover?: boolean;
+    hop?: number;               // v3.8 换乘次数
   };
 }
 

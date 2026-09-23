@@ -5,7 +5,7 @@ import { computed, ref, watch, onBeforeUnmount } from "vue";
 import { game } from "../stores/game";
 import {
   REALMS, EXP_MAX, itemInfo, canUseItem, ageLevel, AGE_HINT, lifespanAvg,
-  STALL_FORCE_TURNS, STALL_TAKEOVER_TURNS,
+  STALL_FORCE_TURNS, STALL_TAKEOVER_TURNS, STALL_HOP_MAX,
 } from "../game/constants";
 import type { ThreadEntry } from "../game/types";
 
@@ -43,8 +43,14 @@ const chronicle = computed(() => game.state?.chronicle || []);
    看见了才知道该收手还是该换个法子，也才知道再拖下去天道会自行划去。 */
 const stallCount = computed(() => game.state?.stall?.count ?? 0);
 const stallLabel = computed(() => game.state?.stall?.label ?? "");
-const stallShown = computed(() => stallCount.value >= STALL_FORCE_TURNS);
+const stallShown = computed(
+  () => stallCount.value >= STALL_FORCE_TURNS || stallHop.value >= 1,
+);
 const stallLeft = computed(() => Math.max(0, STALL_TAKEOVER_TURNS - stallCount.value));
+/* v3.8 换乘：目标被「此人不在此处，往下一处去了」搬走的次数。
+   这一条比连点更要命——玩家往往没察觉自己已经换了三个落脚点，人还在前一站。 */
+const stallHop = computed(() => game.state?.hop ?? 0);
+const hopLeft = computed(() => Math.max(0, STALL_HOP_MAX - stallHop.value));
 function isOverdue(t: ThreadEntry): boolean {
   return (game.state?.turn ?? 0) > (t.due ?? 0);
 }
@@ -172,7 +178,11 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
         <div class="stall-row">
           <span class="st-label">{{ stallLabel || "此事" }}</span>
           <span class="st-count">已追 {{ stallCount }} 轮</span>
-          <span class="st-warn">{{ stallLeft > 0 ? "再无结果，天道将自行划去" : "本轮了结，否则就此作罢" }}</span>
+          <span class="st-warn">{{ stallLeft > 0 ? "再无结果，天道将落下结果" : "本轮必须了结" }}</span>
+        </div>
+        <div class="stall-row st-relay" v-if="stallHop > 0">
+          <span class="st-hop">已换 {{ stallHop }} 处落脚</span>
+          <span class="st-warn">{{ hopLeft > 0 ? "再被指去别处，天道就地揭晓下落" : "此处不再给去处，下落已定" }}</span>
         </div>
       </div>
 

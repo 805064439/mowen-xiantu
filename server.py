@@ -631,15 +631,24 @@ DRY_TAGS = ("explore", "fight")
 RESOLVE_WORDS = ("了断", "罢手", "放弃", "作罢", "不再", "断了", "死心", "另寻", "回头", "歇手")
 
 STALL_TAKEOVER_TEXT = (
-    "\n\n此事追到此处，已是尽头——再耗下去，耗的只是寿元。"
-    "你在心里把它划去了，转而盘算别的出路。"
+    "\n\n线索追到此处，再往下只有同一个下落。"
+    "你把最后的所得在心里过了一遍，算是有了交代，转身去顾别的事。"
 )
 
+# 收场要给出**下落**，不是「算了别找了」——玩家追了这么多轮，想听的是结果，
+# 不是被劝退。{} 处填最近一条线索留下的去向（由 chronicle 末条摘出）。
 STALL_TAKEOVER_LINES = (
-    "再寻无果，就此作罢",
-    "线索到此断绝，无可再追",
-    "心力耗尽，此事放下",
+    "多方寻访，终未得见，下落已明——{}",
+    "此线追到底，落定的结果是——{}",
+    "音讯到这里为止，往后不必再追——{}",
 )
+STALL_TAKEOVER_LINE_FALLBACK = "再无下落，此事就此划去"
+
+# 「换乘」上限：AI 最常见的拖延手法是「此人不在此处，往下一处去了」——
+# 每轮都给确凿情报（姓名+地名），但每张车票都指向下一站。
+# 一轮里同时「了结一条旧线 + 新开一条指向同一目标的新线」就记一次换乘；
+# 换到第几次，由代码给出下落收场，不许再开下一张车票。
+STALL_HOP_MAX = 3
 
 # 关键词兜底：LLM 未给 span 时按文字判粒度（显式 span 优先）。
 # 顺序即优先级——short 的词最具象，故先判。
@@ -1642,6 +1651,63 @@ def update_stall(state: dict, action_text: str) -> dict:
     return cur
 
 
+def update_hop(state: dict, action_tag: str, thread_res: dict) -> int:
+    """「换乘」计数——AI 最擅长的拖延：此人不在此处，往下一处去了。
+
+    一轮里同时「了结一条旧线」又「新开一条线」，说明目标被搬到了下一站；
+    只了结没开新线，才是真的了结，清零。只有出门办事（探索 / 斗法）计入，
+    打坐做生意不算追索。
+
+    为什么必须记这个：stall 数的是「玩家是不是还在说同一句话」，而 AI 每换一站
+    就会改写选项文字（问白芨 → 问陈老六 → 问沈船家），玩家的点击跟着变，
+    文字指纹每次都被重置——计数永不起跳，天道也就永远不接管。
+    """
+    closed, opened = thread_res.get("closed") or [], thread_res.get("opened") or []
+    if action_tag not in DRY_TAGS:
+        return _to_int(state.get("hop"), 0)
+    if closed and opened:
+        n = _to_int(state.get("hop"), 0) + 1
+    elif closed and not opened:
+        n = 0
+    else:
+        n = _to_int(state.get("hop"), 0)
+    state["hop"] = n
+    return n
+
+
+def pursuit_resolved(state: dict, closed_titles: list, action_text: str = "") -> bool:
+    """本轮了结的，是不是**玩家正在追的这件事**。
+
+    v3.6 的写法是 `not thread_res["closed"]`——只要 AI 这轮了结了任意一条线，
+    天道就罢手。而【追索已滞】的提示词恰恰教 AI「断干净也行，把它 close 掉」，
+    于是 AI 每轮 close 一条、每轮都拿到豁免权，接管从上线起一次都没真正触发过。
+
+    改成：了结的那条线，必须认得描写玩家当前目标的指纹（选项原文 / key / label）。
+    别的线结了，不算这件事有了交代。
+    """
+    titles = [str(t) for t in (closed_titles or []) if str(t).strip()]
+    if not titles:
+        return False
+    stall = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+    cands = [str(stall.get("key") or ""), str(stall.get("label") or ""), str(action_text or "")]
+    cands = [c for c in cands if c and len(c) >= 2]
+    return any(same_pursuit(t, c) for t in titles for c in cands)
+
+
+def last_clue_line(state: dict) -> str:
+    """摘出最近一条线索留下的去向，给收场文案用——玩家要的是结果，不是「算了」。"""
+    lines = state.get("chronicle") or []
+    if not lines:
+        return ""
+    tail = str(lines[-1]).strip()
+    for sep in ("：", ":"):
+        if sep in tail:
+            body = tail.split(sep, 1)[1].strip()
+            if body:
+                return body[:THREAD_NOTE_MAX]
+    return ""
+
+
 def update_dry(state: dict, action_tag: str, gained: bool) -> int:
     """连续「出门却一无所获」的轮数——覆盖玩家每轮换个说法、文字指纹抓不住的情形
     （典型：挖石函，选项每轮都换，但结果永远是「还差一点」）。
@@ -1664,24 +1730,41 @@ def stall_level(state: dict) -> int:
 
 
 def stall_prompt_note(state: dict) -> str | None:
-    """追索停滞到第几轮后，给 AI 下的死命令。未达阈值返回 None。"""
+    """追索停滞到第几轮后，给 AI 下的死命令。未达阈值返回 None。
+
+    两条独立的引信：同一句话连追（stall/dry），以及不停把目标搬到下一站（hop）。
+    """
     n = stall_level(state)
-    if n < STALL_FORCE_TURNS:
+    hop = _to_int(state.get("hop"), 0)
+    if n < STALL_FORCE_TURNS and hop < 2:
         return None
     stall = state.get("stall") if isinstance(state.get("stall"), dict) else {}
     label = str(stall.get("label") or "")[:STALL_LABEL_MAX] or "眼下这件事"
-    return (
-        "【追索已滞】\n"
-        f"这是玩家第 {n} 轮在追同一件事（{label}），前几轮都没能了结。"
-        "本轮必须给这件事一个交代，以下三选一：\n"
-        "· 办成了——写明结果，同时写明代价（受伤、破财、欠下人情、错过时机，至少占一样）；\n"
-        "· 断干净了——写出「为何再也追不下去」，并在 thread_updates 里 close 掉它，"
-        "同时给玩家一个具体的替代去向（人名、地名、去处）；\n"
-        "· 换来确凿情报——人没找到也行，但必须落下一个可核对的东西：姓名、地点、时日、物件。\n"
-        "**严禁**再把本轮写成「一无所获、线索又断了」——那已是第 "
-        f"{n} 次让玩家空手而归，属于叙事失败。\n"
-        "若本轮仍未了结，天道会自行把这件事划去，玩家将再也接不回这条线。"
-    )
+    head = "【追索已滞】\n"
+    if hop >= 2:
+        # 换乘：这一条是日志里最典型的拖延，《每个人都指向下一站》
+        head += (
+            f"这条线已经换了 {hop} 处落脚点——每找一处，被告知「人不在此，往别处去了」，"
+            f"目标始终在前一站。玩家追的是结果，不是车票。\n"
+            f"本轮**不许再写「已不在、去了别处、指向下一个地方」**：要么人出现（哪怕只是照面、擦肩、遥见），"
+            "要么这一条到此为止——写出无可再追的确切理由，并给一个**不指向任何新去处**的了结。"
+            "若这条线确乎通向别处，也只能是玩家自己去闯，而不是再递一张车票。\n"
+        )
+    body = ""
+    if n >= STALL_FORCE_TURNS:
+        body = (
+            f"这是玩家第 {n} 轮在追同一件事（{label}），前几轮都没能了结。"
+            "本轮必须给这件事一个交代，以下三选一：\n"
+            "· 办成了——写明结果，同时写明代价（受伤、破财、欠下人情、错过时机，至少占一样）；\n"
+            "· 断干净了——写出「为何再也追不下去」，并在 thread_updates 里 close 掉它，"
+            "给一个明确的了结。**不得以「另有一处可去」收尾**；\n"
+            "· 换来确凿情报——人没找到也行，但必须落下一个可核对的东西：姓名、地点、时日、物件，"
+            "且这个东西必须**指向结束**，不是指向下一站。\n"
+            "**严禁**再把本轮写成「一无所获、线索又断了」——那已是第 "
+            f"{n} 次让玩家空手而归，属于叙事失败。\n"
+            "若本轮仍未了结，天道会自行落一条下落把这件事收掉，玩家将再也接不回这条线。"
+        )
+    return head + body
 
 
 def ensure_resolve_choice(choices: list, state: dict) -> tuple[list, bool]:
@@ -1972,6 +2055,7 @@ def sanitize_state(raw: dict) -> dict:
         # ---- 追索停滞（v3.6）：玩家是不是还在追同一件事、连着几轮没有产出 ----
         "stall": sanitize_stall(raw.get("stall")),
         "dry": _int(raw.get("dry"), 0, 99, 0),
+        "hop": _int(raw.get("hop"), 0, 99, 0),   # v3.8：换乘次数（线索被搬到下一站的次数）
         "chronicle": sanitize_chronicle(raw.get("chronicle")),
     }
 
@@ -3529,15 +3613,26 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     # ---- 未决之事台账：AI 提议 → 代码裁决（开 / 推 / 收 / 丢），随后扫逾期沉底 ----
     thread_res = apply_thread_updates(state, data)
     expired = expire_overdue_threads(state)
+    update_hop(state, action_tag, thread_res)   # 换乘：目标被搬到下一站的次数
     choices = normalize_choices(data.get("choices"), state)
     choices, recall_used = ensure_thread_choice(choices, state)
-    # ---- 追索停滞：逼到第 5 轮仍无结果 → 代码收场，划去此事并强制换场 ----
-    took_over = False
-    if stall_level(state) >= STALL_TAKEOVER_TURNS and not thread_res["closed"]:
-        took_over = True
+    # ---- 追索停滞：逼到第 5 轮（或换乘 3 次）仍无结果 → 代码收场，给出下落 ----
+    # 两条引信彼此独立：
+    #   · 轮数——连追同一件事到极限后才收场；AI 这轮若真把**这件事**了结了，可以豁免；
+    #   · 换乘——目标被接连搬到下一站是结构性证据（也与字面无关），不给豁免。
+    #     换乘只在「了结旧线又开新线」时累加，AI 若给的是真正的了结（只 close 不开新线），
+    #     hop 会被清零，这里自然不会响。
+    _by_turns = (stall_level(state) >= STALL_TAKEOVER_TURNS
+                 and not pursuit_resolved(state, thread_res["closed"], action_text))
+    _by_hop = _to_int(state.get("hop"), 0) >= STALL_HOP_MAX
+    took_over = bool(_by_turns or _by_hop)
+    if took_over:
         _s = state.get("stall") if isinstance(state.get("stall"), dict) else {}
         label = str(_s.get("label") or "")[:STALL_LABEL_MAX] or "此事"
-        line = random.choice(STALL_TAKEOVER_LINES)
+        clue = last_clue_line(state)
+        line = (random.choice(STALL_TAKEOVER_LINES).format(clue)
+                if clue else STALL_TAKEOVER_LINE_FALLBACK)
+        state["hop"] = 0
         turn_now = _to_int(state.get("turn"), 0)
         chronicle = state.setdefault("chronicle", [])
         chronicle.append(f"第{turn_now}轮 · {label}：{line}"[:CHRONICLE_LINE_MAX])
@@ -3579,7 +3674,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     dry = update_dry(state, action_tag, gained)
     _s = state.get("stall") if isinstance(state.get("stall"), dict) else {}
     meta["stall"] = {"count": _to_int(_s.get("count"), 0), "label": _s.get("label", ""),
-                     "dry": dry, "level": stall_level(state), "takeover": took_over}
+                     "dry": dry, "level": stall_level(state), "takeover": took_over,
+                     "hop": _to_int(state.get("hop"), 0)}
 
     # ---- ⑦ 灵丹 buff 倒计时：只在「真正修行」的回合递减（探索回合不消耗）
     # 否则反复出门探索即可无限续 buff，等于绕开闭关白拿效率。

@@ -9,7 +9,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { STALL_FORCE_TURNS, STALL_TAKEOVER_TURNS } from "../../src/game/constants";
+import { STALL_FORCE_TURNS, STALL_TAKEOVER_TURNS, STALL_HOP_MAX } from "../../src/game/constants";
 
 const typesSrc = readFileSync(path.join(process.cwd(), "src/game/types.ts"), "utf-8");
 const drawerSrc = readFileSync(path.join(process.cwd(), "src/components/StatusDrawer.vue"), "utf-8");
@@ -38,6 +38,10 @@ describe("阈值：前后端必须同值", () => {
     expect(backendConst("STALL_TAKEOVER_TURNS")).toBe(STALL_TAKEOVER_TURNS);
   });
 
+  it("换乘上限一致（v3.8）", () => {
+    expect(backendConst("STALL_HOP_MAX")).toBe(STALL_HOP_MAX);
+  });
+
   it("先给 AI 几轮机会，再谈接管", () => {
     expect(STALL_FORCE_TURNS).toBeLessThan(STALL_TAKEOVER_TURNS);
   });
@@ -47,6 +51,10 @@ describe("类型契约：追索计数进了 GameState", () => {
   it("GameState 带 stall 与 dry", () => {
     expect(typesSrc).toMatch(/stall\?:\s*\{[^}]*count\?:\s*number/);
     expect(typesSrc).toMatch(/dry\?:\s*number/);
+  });
+
+  it("GameState 带换乘次数 hop（v3.8）", () => {
+    expect(typesSrc).toMatch(/hop\?:\s*number/);
   });
 
   it("engine_meta 带 stall 明细（导出日志要用）", () => {
@@ -74,12 +82,19 @@ describe("状态抽屉：玩家看得见自己在原地打转", () => {
   });
 
   it("写明了再拖下去的后果", () => {
-    expect(drawerSrc).toContain("天道将自行划去");
+    expect(drawerSrc).toMatch(/天道将落下结果|本轮必须了结/);
+  });
+
+  it("换乘也要显示出来（v3.8：被搬了几站比连点几轮更要命）", () => {
+    expect(drawerSrc).toMatch(/game\.state\?\.hop/);
+    expect(drawerSrc).toContain("已换 {{ stallHop }} 处落脚");
+    expect(drawerSrc).toMatch(/STALL_HOP_MAX/);
   });
 });
 
 describe("久追未果区块的样式不能缺", () => {
-  it.each([".drawer-stall", ".stall-row", ".st-label", ".st-count", ".st-warn"])(
+  it.each([".drawer-stall", ".stall-row", ".st-label", ".st-count", ".st-warn",
+           ".st-relay", ".st-hop"])(
     "%s 有配套 CSS", (sel) => {
       expect(rule(sel), `${sel} 没有任何 CSS —— 会退化成默认排版`).not.toBe("");
     });

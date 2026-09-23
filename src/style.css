@@ -421,6 +421,9 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 .st-count{font-size:10px; color:var(--seal); border:1px solid rgba(164,74,58,.45);
   padding:0 6px; border-radius:99px; letter-spacing:1px; flex:none;}
 .st-warn{font-size:10.5px; color:var(--muted); letter-spacing:.5px; flex:1 1 100%;}
+.st-relay{margin-top:5px; padding-top:4px; border-top:1px dotted var(--line);}
+.st-hop{font-size:10px; color:var(--seal); border:1px dashed rgba(164,74,58,.55);
+  padding:0 6px; border-radius:99px; letter-spacing:1px; flex:none;}
 .drawer-chronicle{margin-top:10px; padding-top:8px; border-top:1px dashed var(--line);}
 .chr-line{font-size:10.5px; color:var(--muted); letter-spacing:.5px; margin:4px 0;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
