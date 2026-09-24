@@ -86,7 +86,8 @@ class TestStallCount:
     def test_sanitize_clamps_the_counter(self, engine):
         s = engine.sanitize_state({"stall": {"key": "追查某人", "count": 99999, "label": "追查某人"}})
         assert s["stall"]["count"] == 999
-        assert engine.sanitize_state({})["stall"] == {"key": "", "count": 0, "label": ""}
+        # tid = 归因到的台账线索 id，比措辞稳定（AI 换地名也冲不掉）
+        assert engine.sanitize_state({})["stall"] == {"key": "", "count": 0, "label": "", "tid": 0}
 
 
 # ---------------------------------------------------------------- 空转连击（换说法也照抓）

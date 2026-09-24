@@ -3,7 +3,7 @@
 
 import { reactive, computed } from "vue";
 import type { GameAction, GameState, Choice, ActResponse, ScenePara, FloatItem, EngineMeta, NpcEvent } from "../game/types";
-import { REALMS, OPENING, INIT_CHOICES, coeffLabel, daysText } from "../game/constants";
+import { REALMS, OPENING, INIT_CHOICES, coeffLabel, daysText, VERSION } from "../game/constants";
 import {
   readSave, writeSave, removeSave, freshState, SAVE_KEY,
   loadReincarnations, saveReincarnations,
@@ -39,6 +39,7 @@ export const game = reactive({
   journalOpen: false,        // 对局日志弹窗（每轮剧情/选项导出）
   shopOpen: false,           // 坊市弹窗（固定价格买卖）
   itemDetail: null as string | null,  // 道具详情弹窗（物品名；null = 关闭）
+  buildInfo: "",                      // 后端自述（版本/commit/模式），页脚版本号的悬停说明
 });
 
 /* ---------------- 打字机 ---------------- */
@@ -366,6 +367,13 @@ async function init() {
   try {
     const r = await fetch(API + "/health").then(r => r.json());
     if (r.mode === "mock") game.mockMode = true;
+    // 屏幕显示的常量版本号可能与线上实际跑的不一致（部署滞后、CDN 缓存），
+    // 所以再把后端自述的版本/commit 拉回来，鼠标悬停即可核对。
+    const parts = [`前端 v${VERSION}`];
+    if (r.version) parts.push(`后端 v${r.version}`);
+    if (r.commit) parts.push(r.commit);
+    if (r.model) parts.push(r.model);
+    game.buildInfo = parts.join(" · ");
   } catch (e) { /* 离线自娱，无妨 */ }
 }
 

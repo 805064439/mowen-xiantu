@@ -336,6 +336,11 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 }
 #btn-journal:hover{background:var(--c-qi); color:#f2ecdd; border-color:var(--c-qi);}
 .foot-btns{display:flex; gap:8px; align-items:center;}
+/* 版本号：排查「线上到底跑哪一版」的唯一锚点。刻意做淡，不抢版面，
+   但必须始终可见——没有它就只能靠 asset 哈希反推。 */
+#ver{font-family:inherit; font-size:11.5px; letter-spacing:1px; color:var(--muted);
+  opacity:.55; cursor:default; user-select:all; white-space:nowrap; transition:opacity .18s;}
+#ver:hover{opacity:1;}
 
 /* ---------- 仙缘令（存档码） ---------- */
 #savecode{position:fixed; inset:0; z-index:99; display:grid; place-items:center;

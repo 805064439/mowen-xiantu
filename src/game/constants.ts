@@ -1,5 +1,9 @@
 /* 世界常量：与后端 REALM_TABLE 保持一致（前端仅做展示） */
 
+/* 版本号：与后端 server.py 的 VERSION 同源，页脚显示它。
+   改一边就要改另一边 —— tests/frontend/constants.spec.ts 会比对两边。 */
+export const VERSION = "3.11.0";
+
 export const REALMS = [
   "炼气一层", "炼气二层", "炼气三层", "炼气四层", "炼气五层",
   "炼气六层", "炼气七层", "炼气八层", "炼气九层", "筑基初期",

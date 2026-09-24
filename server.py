@@ -32,6 +32,10 @@ from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).parent
 
+# 版本号：与前端 src/game/constants.ts 的 VERSION 同源（tests/frontend/constants.spec.ts 盯着）。
+# 界面页脚右下角显示它——没有这一个锚点，就分不清屏幕上跑的是哪一版代码。
+VERSION = "3.11.0"
+
 # ---------------------------------------------------------------- .env 加载（零依赖）
 def _load_dotenv() -> None:
     p = BASE_DIR / ".env"
@@ -637,8 +641,10 @@ STALL_TAKEOVER_TEXT = (
 
 # 收场要给出**下落**，不是「算了别找了」——玩家追了这么多轮，想听的是结果，
 # 不是被劝退。{} 处填最近一条线索留下的去向（由 chronicle 末条摘出）。
+# v3.11：原来那句「多方寻访，终未得见」与提示词冲突——本轮要求 AI 优先写照面，
+# AI 照做了，收场行却又说「终未得见」，同一屏里自相矛盾。改成中性收梢。
 STALL_TAKEOVER_LINES = (
-    "多方寻访，终未得见，下落已明——{}",
+    "多方寻访，这一程落到这般收梢——{}",
     "此线追到底，落定的结果是——{}",
     "音讯到这里为止，往后不必再追——{}",
 )
@@ -1682,20 +1688,81 @@ def _pursuit_head(s: Any) -> str:
     return head if len(head) >= 2 else base
 
 
-def update_stall(state: dict, action_text: str) -> dict:
+def bump_chase(state: dict, thread_res: dict, action_tag: str, action_text: str) -> list:
+    """每轮结束时，给「本轮真正被推进的在册线索」累加已追轮数。返回踩过线的标题。
+
+    这是「已追几轮」的权威来源，取代拿玩家原文当指纹的旧办法——证据见
+    `top_chase_thread` 的注释。AI 天天换地名，「追查苏姓女子」和「西行乌山镇寻苏禾」
+    字面毫无重合，但它申报推进的都是同一条台账线；线是稳定的，措辞不是。
+
+    一轮可能同时推进好几条（主线 + 支线），这里照实都加：主线每轮都被提到，
+    涨得最快，支线只在串场时被提，追平不了。玩家的行动不是出门办事（打坐/买卖）
+    时不计数——那不是在追人。
+    """
+    if not is_pursuit_action(action_tag, action_text):
+        return []
+    threads = state.get("threads") or []
+    turn = _to_int(state.get("turn"), 0)
+    touched = []
+    for title in list(thread_res.get("advanced") or []):
+        th = find_thread(threads, title)
+        if th is None:
+            continue
+        th["chase"] = _to_int(th.get("chase"), 0) + 1
+        th["last"] = turn          # 推进过的线，last 跟着走；归因据此判断「最近在追哪条」
+        touched.append(th.get("title"))
+    return touched
+
+
+def top_chase_thread(state: dict) -> dict | None:
+    """当前追得最久的那条线——「玩家在追什么」由台账说了算，不由选项措辞说了算。
+
+    这条断言来自 2026-09-24 的 67 轮日志：同一个人连追 9 轮，每一轮 AI 都换了地名
+    （追查苏姓女子 → 往越岭深处寻访苏氏药户 → 西行乌山镇寻苏禾），stall 的文本指纹
+    每轮换一次就被冲散，count 永远停在 1~2 —— 5 轮的收束闸门一次都没合上过。
+    """
+    pool = [t for t in (state.get("threads") or []) if _to_int(t.get("chase"), 0) > 0]
+    if not pool:
+        return None
+    # 先看「最近推进到哪一轮」：玩家改追另一条线时，旧的线追得再久也不该继续当目标——
+    # 只看 chase 会让归因黏在旧主线上，换目标换不掉。
+    latest = max(_to_int(t.get("last"), 0) for t in pool)
+    pool = [t for t in pool if _to_int(t.get("last"), 0) == latest]
+    # 同一轮里被同时推进的多条，追得最久的那条是主线（支线只在串场时被提到）。
+    return sorted(pool, key=lambda t: _to_int(t.get("chase"), 0))[-1]
+
+
+def update_stall(state: dict, action_text: str, action_tag: str = "") -> dict:
     """更新「玩家是不是还在追同一件事」的计数。
 
     必须在生成剧情**之前**调用——本轮的提示词要读到这个数，才知道该不该逼结果。
+
+    「+1」的含义是「本轮还得再追一次」：上一轮结束时那条线已累计 chase 轮，
+    本轮这一手若仍归因到它（出门办事 + 台账归因没换人），count 取 chase+1。
+    于是计数每轮都往前走、直到的帐为止；玩家改去打坐时归因为空，
+    计数退回原文指纹那条线。
     """
     key = _norm_phrase(action_text)[:STALL_KEY_MAX]
     prev = state.get("stall") if isinstance(state.get("stall"), dict) else {}
-    if key and same_pursuit(key, prev.get("key", "")):
+    # 打坐、做买卖不算追人——那种轮次不该把这条线的计数继续往上抬。
+    target = top_chase_thread(state) if is_pursuit_action(action_tag, action_text) else None
+    tid = _to_int(target.get("id"), 0) if target else 0
+    t_label = str(target.get("title") or "")[:STALL_LABEL_MAX] if target else ""
+    t_chase = _to_int(target.get("chase"), 0) if target else 0
+    prev_tid = _to_int(prev.get("tid"), 0)
+    if tid and tid == prev_tid:
+        count = max(_to_int(prev.get("count"), 0) + 1, t_chase + 1)
+        label = t_label
+    elif tid:
+        count = t_chase + 1
+        label = t_label
+    elif key and same_pursuit(key, prev.get("key", "")):
         count = _to_int(prev.get("count"), 0) + 1
         label = str(prev.get("label") or "")[:STALL_LABEL_MAX] or key[:STALL_LABEL_MAX]
     else:
         count = 1 if key else 0
         label = key[:STALL_LABEL_MAX]
-    cur = {"key": key, "count": count, "label": label}
+    cur = {"key": key, "count": count, "label": label, "tid": tid}
     state["stall"] = cur
     return cur
 
@@ -1866,17 +1933,26 @@ def stall_prompt_note(state: dict) -> str | None:
         )
     body = ""
     if n >= STALL_FORCE_TURNS:
+        # v3.11：追人就是要追到「人」。旧版把「换来确凿情报」与「办成」并列，
+        # AI 于是专挑最好写的那一项——每轮给一个新地名，条条通往下一站。
+        # 67 轮日志实证：同一个人追了 9 轮，一次面都没照上，玩家全程在收集地名。
+        # 现在把「照面」抬到首选且写死格式，另外两项降级为「确有不可克服的理由」时才用。
         body = (
             f"这是玩家第 {n} 轮在追同一件事（{label}），前几轮都没能了结。"
-            "本轮必须给这件事一个交代，以下三选一：\n"
-            "· 办成了——写明结果，同时写明代价（受伤、破财、欠下人情、错过时机，至少占一样）；\n"
-            "· 断干净了——写出「为何再也追不下去」，并在 thread_updates 里 close 掉它，"
-            "给一个明确的了结。**不得以「另有一处可去」收尾**；"
-            "断干净 ≠ 把人写死——优先写成查明了、事了了；确要写死，必须交代是谁、何时、何据，"
-            "且不得殃及玩家并未在追之人；\n"
-            "· 换来确凿情报——人没找到也行，但必须落下一个可核对的东西：姓名、地点、时日、物件，"
+            "本轮必须给这件事一个交代，**首选照面**：\n"
+            "· **照面了**（首选）——让玩家与目标真正打上照面：当面说上话、隔街遥见、"
+            "擦肩错身而被认出、或她本人当面递来亲笔与信物。要写清在何处、以何种方式见着，"
+            "以及这一面的结果（说开了 / 不愿相认 / 另行约了后话）。"
+            "玩家追这么多轮，想看的就是这张脸，不是又一条指向别处的线索；\n"
+            "· 只有当此人**确实不可能现身**（已在他乡、身不由己、双方都到不了同一处）时，"
+            "才允许退到下面两项之一，且必须在叙事里把这层原因点破，不许蒙混：\n"
+            "  - 断干净了——写出「为何再也追不下去」，并在 thread_updates 里 close 掉它。"
+            "**不得以「另有一处可去」收尾**；断干净 ≠ 把人写死——优先写成查明了、事了了；"
+            "确要写死，必须交代是谁、何时、何据，且不得殃及玩家并未在追之人；\n"
+            "  - 换来确凿情报——必须落下一个可核对的东西：姓名、地点、时日、物件，"
             "且这个东西必须**指向结束**，不是指向下一站。\n"
-            "**严禁**再把本轮写成「一无所获、线索又断了」——那已是第 "
+            "**严禁**再把本轮写成「一无所获、线索又断了」，也严禁只由旁人转述一句"
+            "「她往某处去了」就交差——那已是第 "
             f"{n} 次让玩家空手而归，属于叙事失败。\n"
             "若本轮仍未了结，天道会自行落一条下落把这件事收掉，玩家将再也接不回这条线。"
         )
@@ -2358,18 +2434,23 @@ def sanitize_threads(raw: Any) -> list:
             "last": clamp(_to_int(t.get("last"), 0), 0, 9999),
             "due": clamp(_to_int(t.get("due"), THREAD_DUE_TURNS), 0, 9999),
             "note": "".join(str(t.get("note", "")).split())[:THREAD_NOTE_MAX],
+            "chase": clamp(_to_int(t.get("chase"), 0), 0, 99),   # 已追了几轮（换地名也冲不掉）
         })
     return out
 
 
 def sanitize_stall(raw: Any) -> dict:
-    """追索计数白名单：只留 key / count / label，数值一律钳制。老档缺键 → 空计数。"""
+    """追索计数白名单：只留 key / count / label / tid，数值一律钳制。老档缺键 → 空计数。
+
+    tid 是归因到的台账线索 id——比措辞稳定得多，AI 每轮换个地名也冲不掉它。
+    """
     if not isinstance(raw, dict):
-        return {"key": "", "count": 0, "label": ""}
+        return {"key": "", "count": 0, "label": "", "tid": 0}
     return {
         "key": "".join(str(raw.get("key", "")).split())[:STALL_KEY_MAX],
         "count": clamp(_to_int(raw.get("count"), 0), 0, 999),
         "label": "".join(str(raw.get("label", "")).split())[:STALL_LABEL_MAX],
+        "tid": clamp(_to_int(raw.get("tid"), 0), 0, 99),
     }
 
 
@@ -2936,9 +3017,13 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 18. thread_updates 中 op 只能是 open / advance / close；title 沿用已有线索的名字（照抄【未决之事】
     里的写法），开新线才写新名，2~8 字。**不得把已在册的线索换个名字再开一条**——
     那等于把一件悬事拆成两件，系统也会把它并回原线；note 一句话写近况或结果，20 字以内。
-19. 若收到【追索已滞】：玩家已连追同一件事数轮仍无结果，本轮必须给这件事一个交代——
-    办成（并付出代价）/ 断干净（写明为何追不下去并 close 它）/ 换来确凿情报（姓名、地点、时日、物件），
-    三选一。**严禁再写「一无所获、线索又断了」**。继续拖延会被天道强行收场，此事从此再无下文。
+19. 若收到【追索已滞】：玩家已连追同一件事数轮仍无结果，本轮必须给这件事一个交代。
+    **首选让目标现身照面**（当面说上话、隔街遥见、擦肩被认出、本人当面递物），并写明
+    在何处、以何种方式见着、这一面的结果；只有此人确实不可能现身时才可退让，且须点破原因。
+    退让时的两条：办成（写明结果并付出代价）/ 断干净（写明为何追不下去并 close 它）/
+    换来确凿情报（姓名、地点、时日、物件，且必须指向结束而不是下一站）。
+    **严禁再写「一无所获、线索又断了」，也严禁只让旁人转述一句「他往某处去了」就交差。**
+    继续拖延会被天道强行收场，此事从此再无下文。
     断干净不等于把人写死——优先写成查明了、事了了；确要写死，必须交代是谁、何时、何据，
     且不得殃及玩家并未在追之人。
 20. 若收到【本轮机缘】：写明得到某物，就必须真把它写进叙事（何处所得、经过什么）；
@@ -3754,7 +3839,10 @@ def index():
 @app.get("/api/health")
 def health():
     mode = "real" if (API_KEY and _OPENAI_OK) else "mock"
-    return {"ok": True, "mode": mode, "model": MODEL}
+    # commit 只在 Vercel 构建时注入；本地跑没有，给 None，前端不显示即可
+    commit = (os.environ.get("VERCEL_GIT_COMMIT_SHA") or "")[:7] or None
+    return {"ok": True, "mode": mode, "model": MODEL,
+            "version": VERSION, "commit": commit}
 
 
 def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
@@ -3895,6 +3983,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     thread_res = apply_thread_updates(state, data)
     expired = expire_overdue_threads(state)
     update_hop(state, action_tag, thread_res, action_text)   # 换乘：目标被搬到下一站的次数
+    # 「已追几轮」以台账为准：AI 每轮把人搬个地名，换汤不换药，只有这条线是同一个。
+    touched_chases = bump_chase(state, thread_res, action_tag, action_text)
     choices = normalize_choices(data.get("choices"), state)
     # 人名落地（v3.10）：正文说阿菱、选项给柳三娘——查无出处的人名选项当场作废。
     choices, ground_swaps = ground_choices(choices, state, narrative, action_text)
@@ -3927,8 +4017,11 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         memory_line = memory_line or f"{label}{line}"
         # 收场文案说「下落已明」，选项就不能还指着下一站（2026-09-23 线上实测的残留矛盾）
         choices = takeover_choices(choices, label, action_text)
-        state["stall"] = {"key": "", "count": 0, "label": ""}
+        state["stall"] = {"key": "", "count": 0, "label": "", "tid": 0}
         state["dry"] = 0
+        # 这条线已收过场：不再背着「追了几轮」，否则下一轮计数会立刻跳回阈值、连着收两次。
+        for _th in (state.get("threads") or []):
+            _th["chase"] = 0
         meta["stall_takeover"] = {"label": label, "line": line}
     choices, resolve_used = ensure_resolve_choice(choices, state)
     state["turn"] += 1
@@ -3959,7 +4052,11 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     _s = state.get("stall") if isinstance(state.get("stall"), dict) else {}
     meta["stall"] = {"count": _to_int(_s.get("count"), 0), "label": _s.get("label", ""),
                      "dry": dry, "level": stall_level(state), "takeover": took_over,
-                     "hop": _to_int(state.get("hop"), 0)}
+                     "hop": _to_int(state.get("hop"), 0),
+                     "tid": _to_int(_s.get("tid"), 0),
+                     "chase": max((_to_int(t.get("chase"), 0)
+                                   for t in (state.get("threads") or [])), default=0),
+                     "chased": touched_chases}
 
     # ---- ⑦ 灵丹 buff 倒计时：只在「真正修行」的回合递减（探索回合不消耗）
     # 否则反复出门探索即可无限续 buff，等于绕开闭关白拿效率。
@@ -4119,7 +4216,7 @@ def act(req: ActReq):
         # ④'' 追索计数与机缘同样前置（v3.6）：都要在 AI 落笔之前定下来——
         #     计数要写进提示词（否则 AI 不知道自己已经重复了多少轮），
         #     机缘要写进剧情（否则行囊悄悄进账、剧情里两手空空）。
-        update_stall(state, action_text)
+        update_stall(state, action_text, action_tag)
         open_player_thread(state, action_text, action_tag, action_type == "custom")
         stall_msg = stall_prompt_note(state)
         fortune = pre_roll_fortune(state, action_tag, tier)
@@ -4212,7 +4309,7 @@ def act_stream(req: ActReq):
                 # 天数前置（v3.4）：与 /api/act 同一顺序，两路不得分叉
                 pre_roll = action_exp(action_tag, tier, span == "short", span)
                 # 追索计数与机缘前置（v3.6）：与 /api/act 同序，两路不得分叉
-                update_stall(state, action_text)
+                update_stall(state, action_text, action_tag)
                 open_player_thread(state, action_text, action_tag, action_type == "custom")
                 stall_msg = stall_prompt_note(state)
                 fortune = pre_roll_fortune(state, action_tag, tier)

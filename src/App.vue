@@ -2,7 +2,7 @@
 /* 布局根组件：头部（境界/灵根/徽章）+ 各功能区组合 */
 import { onMounted, computed } from "vue";
 import { game, actions, metaText } from "./stores/game";
-import { REALMS, EXP_MAX } from "./game/constants";
+import { REALMS, EXP_MAX, VERSION } from "./game/constants";
 import StatusPanel from "./components/StatusPanel.vue";
 import StoryView from "./components/StoryView.vue";
 import ChoiceList from "./components/ChoiceList.vue";
@@ -57,6 +57,7 @@ onMounted(() => { actions.init(); });
       <span id="meta">{{ metaText }}</span>
       <span>点击剧情文字可跳过打字</span>
       <span class="foot-btns">
+        <span id="ver" :title="game.buildInfo || '版本号：当前构建的代码版本'">v{{ VERSION }}</span>
         <button id="btn-shop" type="button" @click="game.shopOpen = true">坊市</button>
         <button id="btn-journal" type="button" @click="game.journalOpen = true">对局日志</button>
         <button id="btn-savecode" type="button" @click="game.saveCodeOpen = true">仙缘令</button>

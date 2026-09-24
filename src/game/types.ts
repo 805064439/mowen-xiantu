@@ -62,7 +62,8 @@ export interface GameState {
   elixir_buff?: number;                // 灵丹限时 buff 剩余轮数（服丹后 12 轮）
   scene_pace?: string;                 // 场景节奏 action|resolve|downtime（只影响给什么选项）
   /* ---- 追索停滞（v3.6）：同一件事连追数轮无果，由代码逼结果、再收场 ---- */
-  stall?: { key?: string; count?: number; label?: string };  // 正在追的事与已追轮数
+  // v3.11：tid / chase —— 追索计数改以台账线索为准，AI 每轮换个地名也冲不掉。
+  stall?: { key?: string; count?: number; label?: string; tid?: number };  // 正在追的事与已追轮数
   dry?: number;                        // 连续「出门却一无所获」的轮数
   hop?: number;                        // 换乘次数：目标被「此人不在此处」搬到下一站的次数
 }
@@ -182,11 +183,14 @@ export interface EngineMeta {
   threads?: {                  // v3.5 未决之事台账本轮变动
     opened?: string[]; advanced?: string[]; closed?: string[]; expired?: string[];
     dropped?: number; recall_used?: boolean; resolve_used?: boolean;
-    list?: { title?: string; cat?: string; open?: number; due?: number }[];
+    list?: { title?: string; cat?: string; open?: number; due?: number; chase?: number }[];
   };
   stall?: {                    // v3.6 追索停滞：连追同一件事多少轮了
     count?: number; label?: string; dry?: number; level?: number; takeover?: boolean;
     hop?: number;               // v3.8 换乘次数
+    tid?: number;               // v3.11 归因到的台账线索 id（不再依赖选项措辞）
+    chase?: number;             // v3.11 该线累计被追轮数
+    chased?: string[];          // v3.11 本轮被推进的线（据此累加 chase）
   };
 }
 

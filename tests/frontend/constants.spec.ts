@@ -6,7 +6,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import { REALMS, EXP_MAX, INIT_STATE, OPENING, INIT_CHOICES } from "../../src/game/constants";
+import { REALMS, EXP_MAX, INIT_STATE, OPENING, INIT_CHOICES, VERSION } from "../../src/game/constants";
 
 /** 向上寻找后端源码（不依赖 cwd），把它作为「数值权威」来比对 */
 function findServerPy(): string {
@@ -72,6 +72,34 @@ describe("前后端常量一致性", () => {
   it("后端筑基之上的修为上限与前端一致", () => {
     const foundationMax = Number(/MAX_REALM_INDEX\s*=\s*(\d+)/.exec(serverSrc)?.[1]);
     expect(foundationMax).toBe(REALMS.length - 1);
+  });
+});
+
+describe("版本号", () => {
+  it("形如 x.y.z", () => {
+    expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("与后端 VERSION 完全一致", () => {
+    const backend = /^VERSION\s*=\s*"([^"]+)"/m.exec(serverSrc)?.[1];
+    expect(backend, "未在 server.py 中找到 VERSION").toBeTruthy();
+    expect(VERSION).toBe(backend);
+  });
+
+  it("后端 /api/health 会把版本吐出去", () => {
+    // 用 indexOf 切片而非多行正则：server.py 在 Windows 下检出是 CRLF，
+    // `\n\n\n` 这类字面量匹配会静默失效（正则能跑，只是抓不到）。
+    const at = serverSrc.indexOf("def health():");
+    const tail = at >= 0 ? serverSrc.slice(at, at + 400) : "";
+    const nextDef = tail.indexOf("\ndef ", 4);
+    const fn = nextDef > 0 ? tail.slice(0, nextDef) : tail;
+    expect(fn, "未在 server.py 中定位到 health()").toContain("VERSION");
+  });
+
+  it("界面确实把它渲染出来了（页脚 #ver）", () => {
+    const app = readFileSync(path.join(process.cwd(), "src/App.vue"), "utf-8");
+    expect(app).toContain('id="ver"');
+    expect(app).toMatch(/v\{\{\s*VERSION\s*\}\}/);
   });
 });
 
