@@ -1703,8 +1703,14 @@ def bump_chase(state: dict, thread_res: dict, action_tag: str, action_text: str)
         return []
     threads = state.get("threads") or []
     turn = _to_int(state.get("turn"), 0)
+    # 新开的线也要记：AI 首轮往往只用 open 把线立起来，要到下一轮才以 open/advance
+    # 的形式申报「推进」。少记这一轮，5 轮的闸门就会滑到第 7 轮才合上。
+    titles = []
+    for t in list(thread_res.get("advanced") or []) + list(thread_res.get("opened") or []):
+        if t not in titles:
+            titles.append(t)
     touched = []
-    for title in list(thread_res.get("advanced") or []):
+    for title in titles:
         th = find_thread(threads, title)
         if th is None:
             continue
@@ -1714,22 +1720,27 @@ def bump_chase(state: dict, thread_res: dict, action_tag: str, action_text: str)
     return touched
 
 
-def top_chase_thread(state: dict) -> dict | None:
+def top_chase_thread(state: dict, prev_tid: int = 0) -> dict | None:
     """当前追得最久的那条线——「玩家在追什么」由台账说了算，不由选项措辞说了算。
 
     这条断言来自 2026-09-24 的 67 轮日志：同一个人连追 9 轮，每一轮 AI 都换了地名
     （追查苏姓女子 → 往越岭深处寻访苏氏药户 → 西行乌山镇寻苏禾），stall 的文本指纹
     每轮换一次就被冲散，count 永远停在 1~2 —— 5 轮的收束闸门一次都没合上过。
+
+    prev_tid 是上一轮归因到的那条：AI 常在一个回合里同时提主线与支线，两条都涨，
+    归因会来回跳，计数跟着反复清零。故只要上轮那条还没被明显超过，就仍然认定是它。
     """
     pool = [t for t in (state.get("threads") or []) if _to_int(t.get("chase"), 0) > 0]
     if not pool:
         return None
     # 先看「最近推进到哪一轮」：玩家改追另一条线时，旧的线追得再久也不该继续当目标——
     # 只看 chase 会让归因黏在旧主线上，换目标换不掉。
-    latest = max(_to_int(t.get("last"), 0) for t in pool)
-    pool = [t for t in pool if _to_int(t.get("last"), 0) == latest]
     # 同一轮里被同时推进的多条，追得最久的那条是主线（支线只在串场时被提到）。
-    return sorted(pool, key=lambda t: _to_int(t.get("chase"), 0))[-1]
+    best = sorted(pool, key=lambda t: _to_int(t.get("chase"), 0))[-1]
+    sticky = next((t for t in pool if _to_int(t.get("id"), 0) == prev_tid), None)
+    if sticky is not None and _to_int(sticky.get("chase"), 0) >= _to_int(best.get("chase"), 0):
+        return sticky
+    return best
 
 
 def update_stall(state: dict, action_text: str, action_tag: str = "") -> dict:
@@ -1744,14 +1755,15 @@ def update_stall(state: dict, action_text: str, action_tag: str = "") -> dict:
     """
     key = _norm_phrase(action_text)[:STALL_KEY_MAX]
     prev = state.get("stall") if isinstance(state.get("stall"), dict) else {}
-    # 打坐、做买卖不算追人——那种轮次不该把这条线的计数继续往上抬。
-    target = top_chase_thread(state) if is_pursuit_action(action_tag, action_text) else None
+    prev_tid = _to_int(prev.get("tid"), 0)
+    target = top_chase_thread(state, prev_tid) if is_pursuit_action(action_tag, action_text) else None
     tid = _to_int(target.get("id"), 0) if target else 0
     t_label = str(target.get("title") or "")[:STALL_LABEL_MAX] if target else ""
     t_chase = _to_int(target.get("chase"), 0) if target else 0
-    prev_tid = _to_int(prev.get("tid"), 0)
     if tid and tid == prev_tid:
-        count = max(_to_int(prev.get("count"), 0) + 1, t_chase + 1)
+        # 还是这条线：硬 +1，不受 AI 这轮有没有申报推进的影响——
+        # 它漏报一次，计数就停一次，5 轮的闸门会被拖到 7 轮。
+        count = _to_int(prev.get("count"), 0) + 1
         label = t_label
     elif tid:
         count = t_chase + 1

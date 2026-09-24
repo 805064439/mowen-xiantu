@@ -51,6 +51,15 @@ class TestBumpChase:
         engine.bump_chase(base_state, {"advanced": ["别的线"]}, "explore", "寻苏禾")
         assert base_state["threads"][0].get("chase", 0) == 0
 
+    def test_opening_a_line_starts_the_count(self, engine, base_state):
+        """AI 首轮只用 open 把线立起来：那一轮就得算，否则 5 轮的闸门会滑到第 7 轮。
+
+        线上实测（2026-09-24）：正是这一轮没算进去，连着两轮计数停在 1。
+        """
+        _lines(base_state, "苏禾")
+        engine.bump_chase(base_state, {"advanced": [], "opened": ["苏禾"]}, "explore", "寻苏禾")
+        assert base_state["threads"][0]["chase"] == 1
+
     def test_free_text_pursuit_counts(self, engine, base_state):
         """玩家手打的「去寻阿菱」被判成 other，但字面是追索——照样算。"""
         _lines(base_state, "阿菱")
@@ -98,20 +107,42 @@ class TestStallCountsByThread:
         assert base_state["stall"]["label"] == "苏禾"
         assert base_state["stall"]["tid"] == base_state["threads"][0]["id"]
 
-    def test_switching_target_resets(self, engine, base_state):
-        """改追另一条线 → 归因要跟着换过去，不能黏在追得最久的旧主线上。"""
+    def test_switching_target_takes_over_after_it_is_chased_harder(self, engine, base_state):
+        """改追另一条线：追到比旧主线更久，归因才认它。
+
+        刻意不一改口味就翻脸——AI 常在一轮里把主线和支线都提一遍，
+        若按「最近被提到」归因，计数会在两条线之间来回跳、每跳清零一次
+        （线上实测：第 7 轮才收场，就是这么丢的两轮）。
+        """
+        _lines(base_state, "苏禾", "乌木牌")
+        t = 0
+        for i in range(3):
+            base_state["turn"] = t
+            engine.update_stall(base_state, "追查苏禾", "explore")
+            engine.bump_chase(base_state, {"advanced": ["苏禾"]}, "explore", "追查苏禾")
+            t += 1
+        assert base_state["stall"]["count"] >= 3
+        for i in range(4):                       # 一门心思改追乌木牌
+            base_state["turn"] = t
+            engine.update_stall(base_state, "追查乌木牌来历", "explore")
+            engine.bump_chase(base_state, {"advanced": ["乌木牌"]}, "explore", "追查乌木牌来历")
+            t += 1
+        engine.update_stall(base_state, "追查乌木牌", "explore")
+        assert base_state["stall"]["tid"] == base_state["threads"][1]["id"]
+        assert base_state["stall"]["label"] == "乌木牌"
+
+    def test_side_thread_mentioned_in_passing_does_not_steal_the_attribution(self, engine, base_state):
+        """主线每轮都推进，支线只是串场被提一次——归因必须留在主线上。"""
         _lines(base_state, "苏禾", "乌木牌")
         for i in range(3):
             base_state["turn"] = i
             engine.update_stall(base_state, "追查苏禾", "explore")
-            engine.bump_chase(base_state, {"advanced": ["苏禾"]}, "explore", "追查苏禾")
-        assert base_state["stall"]["count"] >= 3
-        base_state["turn"] = 3
-        engine.update_stall(base_state, "追查乌木牌", "explore")
-        engine.bump_chase(base_state, {"advanced": ["乌木牌"]}, "explore", "追查乌木牌")
-        engine.update_stall(base_state, "追查乌木牌来历", "explore")
-        assert base_state["stall"]["tid"] == base_state["threads"][1]["id"]
-        assert base_state["stall"]["label"] == "乌木牌"
+            bump = {"advanced": ["苏禾"]}
+            if i == 1:
+                bump = {"advanced": ["苏禾", "乌木牌"]}    # 本轮顺带提了一句支线
+            engine.bump_chase(base_state, bump, "explore", "追查苏禾")
+        assert base_state["stall"]["tid"] == base_state["threads"][0]["id"]
+        assert base_state["stall"]["label"] == "苏禾"
 
     def test_calm_turn_falls_back_to_the_wording(self, engine, base_state):
         """去打坐了 → 本轮不算在追人，不该继续抬升这条线的计数。"""
