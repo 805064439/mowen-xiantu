@@ -89,7 +89,8 @@ class TestTakeoverGivesALivePerson:
     def test_all_takeover_wordings_are_free_of_death(self, engine):
         """这是硬约束：整套收场文案里一个死讯词都不许有。"""
         pool = list(engine.STALL_TAKEOVER_LINES) + [
-            engine.STALL_TAKEOVER_LINE_FALLBACK, engine.STALL_TAKEOVER_TEXT]
+            engine.STALL_TAKEOVER_LINE_FALLBACK, engine.STALL_TAKEOVER_TEXT,
+            engine.STALL_TAKEOVER_ITEM_TEXT]
         for t in pool:
             assert engine.is_dead_end_line(t) is False, f"收场文案沾了死讯：{t}"
 
@@ -140,3 +141,44 @@ class TestTakeoverOffersATalk:
             [{"id": "A", "text": "往北追访", "risk": "mid", "tag": "explore"},
              {"id": "B", "text": "再探下落", "risk": "mid", "tag": "explore"}], "", "追查某人")
         assert "照面" in out[1]["text"], out[1]["text"]
+
+
+# ---------------------------------------------------------------- 追的是物，别请它搭话
+# 2026-09-25 线上实测（v3.12 验证）：AI 这局立的线是「渡口残图」「芦荡废坞」——
+# 收场那轮于是给出「上前与渡口残图搭话，当面问个明白」。收场文案只认「人」，
+# 遇上追物/追地的线就当场出戏，比不收场还伤。
+class TestTakeoverKnowsAThingFromAPerson:
+    def test_people_are_people(self, engine):
+        for s in ("苏禾", "阿菱", "溪畔女子", "渡口船家", "西市旧画人", "柳三娘"):
+            assert engine._looks_like_person(s) is True, f"把人当成了物：{s}"
+
+    def test_things_and_places_are_not_people(self, engine):
+        for s in ("渡口残图", "芦荡废坞", "沉沙坞", "无名木牌", "此事", ""):
+            assert engine._looks_like_person(s) is False, f"把物当成了人：{s}"
+
+    def test_a_thing_gets_a_look_not_a_talk(self, engine):
+        out = engine.takeover_choices(
+            [{"id": "A", "text": "往北追访", "risk": "mid", "tag": "explore"},
+             {"id": "B", "text": "再探下落", "risk": "mid", "tag": "explore"}],
+            "渡口残图", "按图寻去")
+        joined = "".join(str(c.get("text") or "") for c in out)
+        assert "搭话" not in joined, f"请一张残图去搭话：{joined}"
+        assert "细看明白" in out[1]["text"], out[1]["text"]
+
+    def test_a_thing_line_gets_the_thing_narration(self, engine, base_state):
+        # label 由 update_stall 从 action 取，故这里把「追的东西」直接当行动传进去——
+        # 传一句「去寻苏禾」会让 label 变成人名，这条测试就白测了。
+        engine.apply_thread_updates(
+            base_state, {"thread_updates": [{"op": "open", "title": "渡口残图", "note": "半角残纸"}]})
+        _, narrative, choices = _takeover(engine, base_state, action="渡口残图")
+        assert engine.STALL_TAKEOVER_ITEM_TEXT in narrative, narrative[-80:]
+        assert engine.STALL_TAKEOVER_TEXT not in narrative
+        assert "搭话" not in "".join(str(c.get("text") or "") for c in choices)
+
+    def test_a_person_line_gets_the_person_narration(self, engine, base_state):
+        engine.apply_thread_updates(
+            base_state, {"thread_updates": [{"op": "open", "title": "苏禾", "note": "采药人"}]})
+        _, narrative, choices = _takeover(engine, base_state, action="苏禾")
+        assert engine.STALL_TAKEOVER_TEXT in narrative, narrative[-80:]
+        assert engine.STALL_TAKEOVER_ITEM_TEXT not in narrative
+        assert "搭话" in choices[1]["text"], choices[1]["text"]

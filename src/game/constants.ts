@@ -2,7 +2,7 @@
 
 /* 版本号：与后端 server.py 的 VERSION 同源，页脚显示它。
    改一边就要改另一边 —— tests/frontend/constants.spec.ts 会比对两边。 */
-export const VERSION = "3.12.0";
+export const VERSION = "3.12.1";
 
 export const REALMS = [
   "炼气一层", "炼气二层", "炼气三层", "炼气四层", "炼气五层",

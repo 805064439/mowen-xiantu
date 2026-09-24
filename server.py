@@ -34,7 +34,7 @@ BASE_DIR = Path(__file__).parent
 
 # 版本号：与前端 src/game/constants.ts 的 VERSION 同源（tests/frontend/constants.spec.ts 盯着）。
 # 界面页脚右下角显示它——没有这一个锚点，就分不清屏幕上跑的是哪一版代码。
-VERSION = "3.12.0"
+VERSION = "3.12.1"
 
 # ---------------------------------------------------------------- .env 加载（零依赖）
 def _load_dotenv() -> None:
@@ -641,6 +641,14 @@ RESOLVE_WORDS = ("了断", "罢手", "放弃", "作罢", "不再", "断了", "�
 STALL_TAKEOVER_TEXT = (
     "\n\n你按这最后一条线走下去，绕过几处岔口，人竟就在前头。"
     "这一趟总算没有落空——你要找的，此刻就站在你能看见的地方。"
+)
+
+# 不是每条线都追着人：AI 立线时常用物/地当标题（渡口残图、芦荡废坞、沉沙坞）。
+# 对这类线照直说「人竟就在前头」「你要找的站在你能看见的地方」，
+# 就成了跟一张纸片对视——收场要交代的是**东西到手**，不是跟谁照面。
+STALL_TAKEOVER_ITEM_TEXT = (
+    "\n\n你按这最后一条线走下去，绕过几处岔口，那东西竟就在前头。"
+    "这一趟总算没有落空——你要找的，此刻就在你眼前。"
 )
 
 # 此路不通：这些词一旦出现在收场句里，玩家读到的就是「人没了」。
@@ -2036,6 +2044,51 @@ def _still_pursuing(text: str, label: str, action_text: str) -> bool:
     return any(w in t for w in STALL_TICKET_WORDS)
 
 
+# 收场要把「找到的东西」摆到玩家眼前，可台账上的线未必追的是人——
+# AI 立线时爱拿物/地当标题（渡口残图、芦荡废坞、沉沙坞、无名木牌）。
+# 照直拼成「上前与渡口残图搭话」当场就成了笑话，比不收场还出戏。
+# 判据取「默认是人，只有认出物/地才降级」：认错成人的代价只是措辞略客气，
+# 认错成物却会把人物线写成翻箱子——而人物线才是这个功能的主场景。
+_ITEM_LIKE_WORDS = (
+    "图", "卷", "册", "本", "信", "笺", "牌", "符", "令", "印", "玺", "丹", "药",
+    "石", "玉", "珠", "铃", "镜", "剑", "刀", "枪", "弓", "匣", "盒", "箱", "囊",
+    "井", "桥", "渡", "坞", "阁", "楼", "堂", "馆", "寺", "庙", "观", "洞",
+    "谷", "山", "岭", "峰", "崖", "溪", "河", "湖", "海", "岛", "洲", "滩",
+    "城", "镇", "村", "巷", "街", "铺", "坊", "市", "驿", "栈", "祠", "塔",
+    "亭", "台", "宅", "院", "府", "宫", "殿", "关", "寨", "林", "原", "碑",
+    "坟", "墓", "船", "车", "舟", "屋", "房", "地", "处", "所",
+)
+# 这些不是「谁」，也不是「什么」，是代码自己的中性占位词——一律按物处理。
+_NEUTRAL_TARGETS = ("此事", "这件事", "一事", "要事")
+# 物/地词表不能一刀切：这些称谓本身带地名/器物字，却明明白白是在喊人。
+# 「溪畔女子」不含上述任何字，靠默认；「渡口船家」「山里道人」则必须救回来。
+_PERSON_LIKE_OVERRIDE = (
+    "人", "女子", "姑娘", "公子", "娘子", "夫人", "老汉", "老丈", "老翁", "道人",
+    "仙子", "道友", "前辈", "掌柜", "船家", "大夫", "师父", "师兄", "师姐",
+    "长老", "真人", "尊者", "散人", "居士", "少年", "童子", "侍女", "护卫",
+)
+
+
+def _looks_like_person(label: Any) -> bool:
+    """这条线索追的是不是**一个人**（而不是一件物、一处地）。
+
+    先走 _person_tokens 的强人名模式（阿菱 / 沈船家 / 陈老六 / 柳三娘），
+    再放行带称谓的复合称呼（渡口船家 / 山里道人——含「渡」「山」却是在喊人），
+    最后退回「默认是人，命中物/地字才判物」。判错的代价不对称，
+    所以宁可放过：把人物线误判成物，玩家等五轮等来一句「上前细看」。
+    """
+    s = str(label or "").strip()
+    if not s:
+        return False
+    if s in _NEUTRAL_TARGETS or s.startswith("此"):
+        return False
+    if _person_tokens(s):
+        return True
+    if any(w in s for w in _PERSON_LIKE_OVERRIDE):
+        return True
+    return not any(w in s for w in _ITEM_LIKE_WORDS)
+
+
 def takeover_choices(choices: list, label: str, action_text: str) -> list:
     """收场后的选项：人都找到了，第一条就得是上去说话。
 
@@ -2060,8 +2113,15 @@ def takeover_choices(choices: list, label: str, action_text: str) -> list:
     while len(out) < 1:                       # 极端兜底：AI 一条可用选项都没给
         out.append({"text": "就地收摄心神，先把心绪按定", "risk": "low", "tag": "other"})
     # 收场是把人送到了眼前，不是把人收走——所以头一条永远是去跟他说话。
+    # 但对象未必是人：AI 立的线常拿物/地当标题，照直拼成「上前与渡口残图搭话」
+    # 当场就成了笑话。这类线给「上前看个明白」，同样把玩家推到目标跟前。
     who = _pursuit_head(str(label or ""))[:STALL_LABEL_MAX]
-    talk = f"上前与{who}搭话，当面问个明白" if who else "上前打个照面，当面问个明白"
+    if who and _looks_like_person(who):
+        talk = f"上前与{who}搭话，当面问个明白"
+    elif who:
+        talk = "上前细看明白，把这一趟的来由弄清"
+    else:
+        talk = "上前打个照面，当面问个明白"
     out.append({"text": talk[:24], "risk": "low", "tag": "other"})
     out.append({"text": "自此改道，另作打算", "risk": "low", "tag": "other"})
     for i, c in enumerate(out):
@@ -4066,7 +4126,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
             hit["chase"] = 0
             hit["last"] = turn_now
             hit["due"] = turn_now + THREAD_DUE_TURNS
-        narrative = narrative + STALL_TAKEOVER_TEXT
+        narrative = narrative + (STALL_TAKEOVER_TEXT if _looks_like_person(label)
+                                 else STALL_TAKEOVER_ITEM_TEXT)
         memory_line = memory_line or f"{label}{line}"
         # 收场文案说「下落已明」，选项就不能还指着下一站（2026-09-23 线上实测的残留矛盾）
         choices = takeover_choices(choices, label, action_text)
