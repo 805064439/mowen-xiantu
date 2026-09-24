@@ -51,6 +51,18 @@ class TestDeadEndFilter:
         for s in ("人早已失踪", "下落不明", "查无此人", "此后音讯断绝", "就此划去"):
             assert engine.is_dead_end_line(s) is True, f"漏判：{s}"
 
+    def test_the_20260925_online_leak_is_a_dead_end(self, engine):
+        """线上抓到的原句：这句被当成有效线索摘进了收场句，与「当面见了」并存。
+
+        2026-09-25 v3.12.1 验证时，收场句是
+        「这一趟没有落空，当面见了——寻着柳三娘，得素银簪，菱姑已三年无音信」。
+        「只堵杳无音信」是不够的，AI 换个说法就绕过去了，这一族要成对堵。
+        """
+        leak = "寻着柳三娘，得素银簪，菱姑已三年无音信"
+        assert engine.is_dead_end_line(leak) is True
+        for s in ("菱姑无音信", "音信全无", "再无消息", "不见踪影", "踪影全无"):
+            assert engine.is_dead_end_line(s) is True, f"漏判：{s}"
+
     def test_a_lead_is_not_a_dead_end(self, engine):
         """「她去了岳州港」是有去处的活线索，别把它跟死讯一起滤掉。"""
         assert engine.is_dead_end_line("人说她去了岳州港，明早还从这里上船") is False
