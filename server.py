@@ -1705,6 +1705,19 @@ def update_stall(state: dict, action_text: str) -> dict:
 PLAYER_PURSUIT_WORDS = ("寻", "找", "追", "查", "访", "探", "问", "赴", "见", "回")
 
 
+def is_pursuit_action(action_tag: str, action_text: str = "") -> bool:
+    """这一轮算不算「在追一件事」。
+
+    tag 是 explore / fight 当然算；但玩家手打的自由输入常常被 infer_action_tag
+    判成 other——「去寻阿菱」里的单字「寻」不在关键词表里。若只认 tag，
+    换索引擎（update_hop）对最典型的追索场景就完全失明：AI 每轮把人搬到下一站，
+    hop 却永远是 0。故 tag 认不出时，看字面上有没有追索字眼。
+    """
+    if action_tag in DRY_TAGS:
+        return True
+    return any(w in str(action_text or "") for w in PLAYER_PURSUIT_WORDS)
+
+
 def open_player_thread(state: dict, action_text: str, action_tag: str, is_custom: bool) -> str | None:
     """玩家意图开线：自由输入连追同一件事 PLAYER_THREAD_TURNS 轮，代码替它立一条线索。
 
@@ -1723,7 +1736,7 @@ def open_player_thread(state: dict, action_text: str, action_tag: str, is_custom
         return None
     if action_tag in ("cultivate", "rest", "trade"):
         return None
-    if action_tag not in DRY_TAGS and not any(w in str(action_text or "") for w in PLAYER_PURSUIT_WORDS):
+    if not is_pursuit_action(action_tag, action_text):
         return None
     title = _pursuit_head(label)[:THREAD_TITLE_MAX]
     if len(title) < 2:
@@ -1747,7 +1760,7 @@ def open_player_thread(state: dict, action_text: str, action_tag: str, is_custom
     return title
 
 
-def update_hop(state: dict, action_tag: str, thread_res: dict) -> int:
+def update_hop(state: dict, action_tag: str, thread_res: dict, action_text: str = "") -> int:
     """「换乘」计数——AI 最擅长的拖延：此人不在此处，往下一处去了。
 
     一轮里同时「了结一条旧线」又「新开一条线」，说明目标被搬到了下一站；
@@ -1759,7 +1772,12 @@ def update_hop(state: dict, action_tag: str, thread_res: dict) -> int:
     文字指纹每次都被重置——计数永不起跳，天道也就永远不接管。
     """
     closed, opened = thread_res.get("closed") or [], thread_res.get("opened") or []
-    if action_tag not in DRY_TAGS:
+    if action_tag in DRY_TAGS:
+        pass                                    # 出门办事：照常计入
+    elif (_to_int((state.get("stall") or {}).get("count"), 0) >= PLAYER_THREAD_TURNS
+          and any(w in str(action_text or "") for w in PLAYER_PURSUIT_WORDS)):
+        pass                                    # 自由输入连追同一件：也算在追
+    else:
         return _to_int(state.get("hop"), 0)
     if closed and opened:
         n = _to_int(state.get("hop"), 0) + 1
@@ -3876,7 +3894,7 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     # ---- 未决之事台账：AI 提议 → 代码裁决（开 / 推 / 收 / 丢），随后扫逾期沉底 ----
     thread_res = apply_thread_updates(state, data)
     expired = expire_overdue_threads(state)
-    update_hop(state, action_tag, thread_res)   # 换乘：目标被搬到下一站的次数
+    update_hop(state, action_tag, thread_res, action_text)   # 换乘：目标被搬到下一站的次数
     choices = normalize_choices(data.get("choices"), state)
     # 人名落地（v3.10）：正文说阿菱、选项给柳三娘——查无出处的人名选项当场作废。
     choices, ground_swaps = ground_choices(choices, state, narrative, action_text)

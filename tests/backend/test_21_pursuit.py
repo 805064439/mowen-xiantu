@@ -96,6 +96,29 @@ class TestUpdateHop:
             engine.update_hop(base_state, "explore", {"closed": [f"甲{i}"], "opened": [f"乙{i}"]})
         assert base_state["hop"] == 3
 
+    def test_free_text_pursuit_counted(self, engine, base_state):
+        """玩家手打的「去寻阿菱」被 infer_action_tag 判成 other——
+        只看 tag 的话，换索引擎对最典型的追索场景完全失明：AI 每轮把人搬到下一站，
+        hop 却永远是 0，第三条引信形同虚设。"""
+        base_state["stall"] = {"key": "去寻阿菱", "count": 2, "label": "去寻阿菱"}
+        n = engine.update_hop(base_state, "other", {"closed": ["阿菱"], "opened": ["云梦泽"]},
+                              "去寻阿菱")
+        assert n == 1
+
+    def test_free_text_one_shot_not_counted(self, engine, base_state):
+        """刚提一嘴、还没成「连追」，且不是探索行动——不该攒换乘（防误接管）。"""
+        base_state["stall"] = {"key": "回柴房", "count": 1, "label": "回柴房"}
+        n = engine.update_hop(base_state, "other", {"closed": ["甲"], "opened": ["乙"]},
+                              "回柴房歇息")
+        assert n == 0
+
+    def test_free_text_calm_word_not_counted(self, engine, base_state):
+        """「就地打坐调息」没有追索字眼，即使连说两轮也不记换乘。"""
+        base_state["stall"] = {"key": "就地打坐调息", "count": 3, "label": "就地打坐调息"}
+        n = engine.update_hop(base_state, "other", {"closed": ["甲"], "opened": ["乙"]},
+                              "就地打坐调息")
+        assert n == 0
+
 
 # ---------------------------------------------------------------- 下落提取
 
