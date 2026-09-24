@@ -183,7 +183,8 @@ export interface EngineMeta {
   threads?: {                  // v3.5 未决之事台账本轮变动
     opened?: string[]; advanced?: string[]; closed?: string[]; expired?: string[];
     dropped?: number; recall_used?: boolean; resolve_used?: boolean;
-    list?: { title?: string; cat?: string; open?: number; due?: number; chase?: number }[];
+    list?: { title?: string; cat?: string; open?: number; due?: number; chase?: number;
+             found?: number }[];   // found=1：已照面，人找着了，余下只是续话
   };
   stall?: {                    // v3.6 追索停滞：连追同一件事多少轮了
     count?: number; label?: string; dry?: number; level?: number; takeover?: boolean;

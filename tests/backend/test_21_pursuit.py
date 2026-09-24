@@ -269,7 +269,11 @@ class TestTakeoverChoices:
         texts = [c["text"] for c in choices]
         assert "再追一程" not in texts, f"还在递车票：{texts}"
         pool = [t["text"] for t in engine.STALL_TAKEOVER_SWAPS]
-        assert texts[1] in pool, f"缺的一条没从池里补上：{texts}"
+        # 无害的回头路原样留着，递车票的那条被丢掉了
+        assert texts[0] == "就地调息", f"误伤了无害选项：{texts}"
+        assert texts[0] not in pool
+        # 第二条是去找那个刚找到的人说话——找到了却搭不上话，等于没找到。
+        assert "搭话" in texts[1], f"收场后没给说话的入口：{texts}"
 
     def test_harmless_choice_kept_with_span(self, engine, base_state):
         """无害的回头路不该被误伤，span 也不能丢（重建选项时最容易掉的字段）。"""
@@ -299,13 +303,13 @@ class TestTakeoverChoices:
         assert choices[0]["text"] == "再追一程", "接管前不该替换"
 
     def test_all_tickets_pulls_pool_in_order(self, engine, base_state):
-        """两条都指着本线 → 按序从池里取两条，不掷骰。"""
+        """两条都指着本线 → 按序从池里补位，不掷骰，第二条固定是去说话。"""
         raw = [{"id": "A", "text": "往北寻青芦渡", "risk": "mid", "tag": "explore"},
                {"id": "B", "text": "再去问那老汉", "risk": "mid", "tag": "explore"}]
         out = engine.takeover_choices(raw, "追查溪畔女子", "追查溪畔女子")
         swaps = engine.STALL_TAKEOVER_SWAPS
         assert out[0]["text"] == swaps[0]["text"]
-        assert out[1]["text"] == swaps[1]["text"]
+        assert "溪畔女子" in out[1]["text"] and "搭话" in out[1]["text"]
         assert out[2]["text"] == "自此改道，另作打算"
 
     def test_deterministic(self, engine, base_state):

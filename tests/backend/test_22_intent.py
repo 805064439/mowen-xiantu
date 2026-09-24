@@ -323,19 +323,22 @@ class TestGroundingViaPostprocess:
 # ---------------------------------------------------------------- 写死口径（C）
 
 class TestDeathWording:
-    def test_stall_note_forbids_gratuitous_death(self, engine, base_state):
-        """断干净 ≠ 人死了——收场提示必须把这条口径写明白。"""
+    """v3.12：旧口径只是「写死须交代凭据」，AI 照着做照样能拖出一座坟——
+    玩家追九轮等来一纸死讯。现在连这个退路都撤了：必须把人写出来。"""
+
+    def test_stall_note_forbids_killing_the_target(self, engine, base_state):
         s = base_state
         for _ in range(engine.STALL_FORCE_TURNS):
             engine.update_stall(s, "去寻阿菱")
         note = engine.stall_prompt_note(s)
         assert note is not None
-        assert "把人写死" in note
-        assert "是谁、何时、何据" in note
-        assert "殃及玩家并未在追" in note
+        for w in ("过世", "失踪", "下落不明", "音讯断绝"):
+            assert w in note, f"没明令禁止「{w}」这种收尾"
+        assert "必须让这个人出场" in note
 
-    def test_system_prompt_has_death_clause(self, engine):
-        assert "断干净不等于把人写死" in engine.SYSTEM_PROMPT
+    def test_system_prompt_forbids_killing_the_target(self, engine):
+        assert "必须让这个人出场" in engine.SYSTEM_PROMPT
+        assert "退路" in engine.SYSTEM_PROMPT or "没有退路" in engine.SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------- 端到端：演武模式两连击

@@ -227,14 +227,24 @@ class TestTakeover:
         assert meta["stall"]["takeover"] is False
         assert narrative.strip() == "石函终开。"
 
-    def test_takeover_clears_the_matching_thread(self, engine, base_state):
+    def test_takeover_marks_the_thread_as_found(self, engine, base_state):
+        """收场不是注销这条线：人找着了，线要转成「当面在此」留在册上给玩家续话。
+
+        旧做法是 remove(hit)，玩家看到的是台账里凭空少了一条——追了这么久的事
+        连个交代的入口都没留下。
+        """
         engine.apply_thread_updates(base_state, {"thread_updates": [{"op": "open", "title": "水下石函"}]})
         for _ in range(engine.STALL_TAKEOVER_TURNS):
             engine.update_stall(base_state, "水下石函")
         meta = {}
         self._run(engine, base_state,
                   {"delta": {}, "choices": _dig_choices(), "narrative": "n", "memory": ""}, meta)
-        assert base_state["threads"] == []
+        assert meta["stall"]["takeover"] is True
+        assert len(base_state["threads"]) == 1, "人找着了，这条线不该从台账上消失"
+        th = base_state["threads"][0]
+        assert th["note"] == engine.STALL_FOUND_NOTE
+        assert th["found"] == 1
+        assert th["chase"] == 0, "照过面就不该再被当成新一轮追索"
 
     def test_no_takeover_below_the_threshold(self, engine, base_state):
         for _ in range(engine.STALL_TAKEOVER_TURNS - 1):

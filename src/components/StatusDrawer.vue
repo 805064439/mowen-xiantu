@@ -178,11 +178,11 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
         <div class="stall-row">
           <span class="st-label">{{ stallLabel || "此事" }}</span>
           <span class="st-count">已追 {{ stallCount }} 轮</span>
-          <span class="st-warn">{{ stallLeft > 0 ? "再无结果，天道将落下结果" : "本轮必须了结" }}</span>
+          <span class="st-warn">{{ stallLeft > 0 ? "再寻不着，天道会把人送来" : "本轮必须见着人" }}</span>
         </div>
         <div class="stall-row st-relay" v-if="stallHop > 0">
           <span class="st-hop">已换 {{ stallHop }} 处落脚</span>
-          <span class="st-warn">{{ hopLeft > 0 ? "再被指去别处，天道就地揭晓下落" : "此处不再给去处，下落已定" }}</span>
+          <span class="st-warn">{{ hopLeft > 0 ? "再被指去别处，人就亲自来见你" : "此处不再给去处，人就在眼前" }}</span>
         </div>
       </div>
 

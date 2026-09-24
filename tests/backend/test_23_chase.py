@@ -184,23 +184,26 @@ class TestChaseSanitize:
 class TestStallPromptDemandsAMeeting:
     def test_third_turn_demands_the_target_show_up(self, engine, base_state):
         """旧口径把「换来情报」与「办成」并列，AI 于是专挑最好写的那一项——
-        每轮给一个新地名。现在必须首选照面。"""
+        每轮给一个新地名，逼得紧了就拖出一座坟。现在只有一条路：让人出场。"""
         _lines(base_state, "苏禾")
         for i in range(engine.STALL_FORCE_TURNS):
             engine.update_stall(base_state, f"追查苏禾第{i}回", "explore")
             engine.bump_chase(base_state, {"advanced": ["苏禾"]}, "explore", f"追查苏禾第{i}回")
         note = engine.stall_prompt_note(base_state)
         assert note is not None
-        assert "照面" in note
+        assert "必须让这个人出场" in note
+        assert "没有别的选项" in note
 
-    def test_ticket_information_is_demoted(self, engine, base_state):
-        """「指向下一站的情报」不再是并列的合法出口，只能作为退让项出现。"""
+    def test_ticket_recital_is_no_longer_an_exit(self, engine, base_state):
+        """「换来确凿情报」这条退路已彻底撤销——留给 AI 的只剩把人写出来。"""
         _lines(base_state, "苏禾")
         for i in range(engine.STALL_FORCE_TURNS):
             engine.update_stall(base_state, f"追查苏禾第{i}回", "explore")
             engine.bump_chase(base_state, {"advanced": ["苏禾"]}, "explore", f"追查苏禾第{i}回")
         note = engine.stall_prompt_note(base_state)
-        assert "指向下一站" in note
+        assert "换来确凿情报" not in note
+        # 「他往某处去了」仍在文里，但身份是被严禁的对象，不再是合法出口
+        assert "旁人转述" in note
 
     def test_takeover_line_no_longer_contradicts_a_meeting(self, engine):
         """收场行不能又写「终未得见」——本轮刚要求 AI 写照面，两句会打架。"""

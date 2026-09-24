@@ -81,8 +81,9 @@ describe("状态抽屉：玩家看得见自己在原地打转", () => {
     expect(drawerSrc).toMatch(/stallCount\.value\s*>=\s*STALL_FORCE_TURNS/);
   });
 
-  it("写明了再拖下去的后果", () => {
-    expect(drawerSrc).toMatch(/天道将落下结果|本轮必须了结/);
+  it("写明了再拖下去的后果——是「人会被送到你面前」，不是「此事就没了」", () => {
+    expect(drawerSrc).toMatch(/天道会把人送来|本轮必须见着人/);
+    expect(drawerSrc).not.toMatch(/此事作罢|下落已定/);
   });
 
   it("换乘也要显示出来（v3.8：被搬了几站比连点几轮更要命）", () => {
