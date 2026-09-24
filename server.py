@@ -664,6 +664,13 @@ STALL_TICKET_WORDS = ("追", "寻", "访", "问", "探", "查", "线索", "下�
 # 换到第几次，由代码给出下落收场，不许再开下一张车票。
 STALL_HOP_MAX = 3
 
+# 玩家意图开线（v3.10）：自由输入连追 2 轮同一件事，代码就为它开一条线索。
+# 病灶（2026-09-23 阿菱日志）：玩家连打 4 轮「去寻阿菱」，阿菱始终进不了台账——
+# THREAD_MAX 满了禁止开新线，而玩家的自由输入没有任何「开线」机制；
+# 提示词又逼着 AI 优先推进在册的债，于是 AI 自己造的线（柳三娘）受保护，
+# 玩家真正追的人（阿菱）反而只活在本轮。代码替玩家把意图记成债，两头才算接上。
+PLAYER_THREAD_TURNS = 2
+
 # 关键词兜底：LLM 未给 span 时按文字判粒度（显式 span 优先）。
 # 顺序即优先级——short 的词最具象，故先判。
 # 顺序是有讲究的：short → long → medium。
@@ -1647,6 +1654,34 @@ def same_pursuit(a: Any, b: Any) -> bool:
     return hit / len(frags) >= STALL_SIM_RATIO
 
 
+_LEAD_VERB_RE = re.compile(r"^(再|又|先|且|暂|并|却|前去|先去|且去|去|往|赴|寻|找|查|访|探|问|追|见)")
+
+
+def _strip_lead_verbs(s: Any) -> str:
+    """剥掉短语开头的动词/趋向词（「去寻阿菱」→「阿菱」）。
+
+    玩家输入常自带动作词，而这些词一旦被拼进「另寻{}以外的出路」就会叠出
+    「另寻寻柳三娘…」这类病句；开线索标题时同样要先剥掉，标题该是「阿菱」
+    而不是「去寻阿菱」。
+    """
+    t = str(s or "").strip()
+    prev = None
+    while t and t != prev:
+        prev = t
+        t = _LEAD_VERB_RE.sub("", t, count=1)
+    return t
+
+
+def _pursuit_head(s: Any) -> str:
+    """从玩家的追索短语里取「追的是谁/什么」：剥开头动词与「下落/踪迹」尾巴，再砍掉「往某处」。"""
+    base = _strip_lead_verbs(s)
+    base = re.sub(r"(的)?(下落|踪迹|去向|消息|线索)$", "", base)
+    if not base:
+        return ""
+    head = re.split(r"[往赴]", base, maxsplit=1)[0].strip()
+    return head if len(head) >= 2 else base
+
+
 def update_stall(state: dict, action_text: str) -> dict:
     """更新「玩家是不是还在追同一件事」的计数。
 
@@ -1663,6 +1698,53 @@ def update_stall(state: dict, action_text: str) -> dict:
     cur = {"key": key, "count": count, "label": label}
     state["stall"] = cur
     return cur
+
+
+# 自由输入算「追索」的字眼：玩家敲「去寻阿菱」，infer_action_tag 认不出 explore
+# （关键词表里没有单字「寻/找」），只能靠字面判断这是不是一件在追的事。
+PLAYER_PURSUIT_WORDS = ("寻", "找", "追", "查", "访", "探", "问", "赴", "见", "回")
+
+
+def open_player_thread(state: dict, action_text: str, action_tag: str, is_custom: bool) -> str | None:
+    """玩家意图开线：自由输入连追同一件事 PLAYER_THREAD_TURNS 轮，代码替它立一条线索。
+
+    必须在生成剧情**之前**调用——开出来的线要进【未决之事】，提示词的「债」
+    才认得玩家真正在追的东西（否则 AI 又会把它接到自己造的线上去）。
+
+    门槛：明确非追索的行动（打坐/休养/买卖）不开；tag 认不出 explore 的，
+    靠字面追索字眼（寻/找/追/查……）兜底。台账满时不客气：挤掉最旧的一条
+    疑窦线（没有疑窦则挤最旧的）。AI 造的线可以被挤掉，玩家的意图不能——
+    这正是本次要修的方向。
+    """
+    stall = state.get("stall") if isinstance(state.get("stall"), dict) else {}
+    label = str(stall.get("label") or "")
+    count = _to_int(stall.get("count"), 0)
+    if not is_custom or count < PLAYER_THREAD_TURNS:
+        return None
+    if action_tag in ("cultivate", "rest", "trade"):
+        return None
+    if action_tag not in DRY_TAGS and not any(w in str(action_text or "") for w in PLAYER_PURSUIT_WORDS):
+        return None
+    title = _pursuit_head(label)[:THREAD_TITLE_MAX]
+    if len(title) < 2:
+        return None
+    threads = state.setdefault("threads", [])
+    if find_thread(threads, title) is not None:
+        return None                      # 已在册（AI 已开过同名线）：认得就行，不另立
+    if len(threads) >= THREAD_MAX:
+        pool = [t for t in threads if t.get("cat") == "疑窦"] or threads
+        victim = sorted(pool, key=lambda t: (_to_int(t.get("last"), 0), _to_int(t.get("id"), 0)))[0]
+        threads.remove(victim)
+    turn = _to_int(state.get("turn"), 0)
+    threads.append({
+        "id": max((_to_int(t.get("id"), 0) for t in threads), default=0) + 1,
+        "title": title,
+        "cat": _thread_cat(None, title),
+        "open": turn, "last": turn,
+        "due": turn + THREAD_DUE_TURNS,
+        "note": "玩家连番追及，须给交代",
+    })
+    return title
 
 
 def update_hop(state: dict, action_tag: str, thread_res: dict) -> int:
@@ -1771,7 +1853,9 @@ def stall_prompt_note(state: dict) -> str | None:
             "本轮必须给这件事一个交代，以下三选一：\n"
             "· 办成了——写明结果，同时写明代价（受伤、破财、欠下人情、错过时机，至少占一样）；\n"
             "· 断干净了——写出「为何再也追不下去」，并在 thread_updates 里 close 掉它，"
-            "给一个明确的了结。**不得以「另有一处可去」收尾**；\n"
+            "给一个明确的了结。**不得以「另有一处可去」收尾**；"
+            "断干净 ≠ 把人写死——优先写成查明了、事了了；确要写死，必须交代是谁、何时、何据，"
+            "且不得殃及玩家并未在追之人；\n"
             "· 换来确凿情报——人没找到也行，但必须落下一个可核对的东西：姓名、地点、时日、物件，"
             "且这个东西必须**指向结束**，不是指向下一站。\n"
             "**严禁**再把本轮写成「一无所获、线索又断了」——那已是第 "
@@ -1793,9 +1877,11 @@ def ensure_resolve_choice(choices: list, state: dict) -> tuple[list, bool]:
         if any(w in str((c or {}).get("text", "")) for w in RESOLVE_WORDS):
             return choices, False
     stall = state.get("stall") if isinstance(state.get("stall"), dict) else {}
-    label = str(stall.get("label") or "")[:STALL_LABEL_MAX] or "此事"
+    # label 是玩家原话的前 8 字，常自带动词（「寻柳三娘往南溪」）——不剥掉会拼出
+    # 「另寻寻柳三娘…」这种叠动词病句（2026-09-23 日志实见）。
+    head = _pursuit_head(str(stall.get("label") or "")[:STALL_LABEL_MAX]) or "此事"
     out = [dict(c) for c in choices[:2]]
-    out.append({"id": "ABC"[len(out)], "text": f"就此罢手，另寻{label}以外的出路"[:24],
+    out.append({"id": "ABC"[len(out)], "text": f"就此罢手，另寻{head}以外的出路"[:24],
                 "risk": "low", "tag": "other"})
     return out, True
 
@@ -1838,6 +1924,127 @@ def takeover_choices(choices: list, label: str, action_text: str) -> list:
         c["id"] = "ABC"[i]
     out.append({"id": "C", "text": "自此改道，另作打算", "risk": "low", "tag": "other"})
     return out
+
+
+# ---------------------------------------------------------------- 选项人名落地（v3.10）
+# 事故（2026-09-23 阿菱日志）：正文写的是阿菱，选项主位却是「寻柳三娘，往南溪谷一探」——
+# 柳三娘只是正文末句里一句闲话捎出来的人物，一点选项就登堂入室成了主线，
+# 玩家追的人（阿菱）从此再无入口。
+# 修法：探索/斗法类选项里出现「像人名的词」，必须在本轮正文（末句除外——闲话人物
+# 多半从那里冒出来）、在册线索、江湖名册或玩家输入里有出处；查无此人的选项作废，
+# 从兜底池按序补一条（不掷骰）。
+_PERSON_SUFFIXES = ("姑娘", "公子", "道友", "前辈", "老丈", "老汉", "老翁", "仙子", "道人",
+                    "长老", "师兄", "师姐", "师叔", "掌柜", "船家", "大夫", "尊者", "老祖",
+                    "老怪", "道长", "真君", "真人", "散人", "居士", "娘子", "夫人", "老爷",
+                    "侍女", "童子", "护卫", "管家", "少爷", "小姐")
+_NAME_HEAD_STOP = set("这那某个此各每")
+# 常见姓氏（《百家姓》前段）——只用于「姓+排行」「姓+数字+称谓」这类强人名模式，
+# 不做泛化的「姓+任意字」识别（那会把「柳树下」「陈年老酒」全误伤）。
+COMMON_SURNAMES = set(
+    "赵钱孙李周吴郑王冯陈蒋沈韩杨朱秦许何吕张孔曹严金魏陶姜谢邹苏潘范彭郎马苗凤花方"
+    "俞任袁柳史唐薛雷贺罗齐黄萧尹姚邵汪毛戴宋庞熊纪舒董梁杜贾路江童颜郭梅盛林钟徐"
+    "邱骆高夏蔡田樊胡凌霍万支柯管卢莫"
+)
+# 看着像人名、实际是物名的词，不参与落地校验
+_PERSON_TOKEN_STOP = ("阿胶",)
+
+
+def _person_tokens(text: str) -> set:
+    """从选项文字里提取「像人名的词」。
+
+    只认四种低误伤模式：阿X（阿菱）、称谓后缀（沈船家）、姓+老/小+排行（陈老六）、
+    姓+数字+娘/郎/哥/姐/婶（柳三娘）。泛化的人名（李慕玄之类）认不出来——
+    宁可放过，不可错杀：错杀会把正常选项换成兜底，玩家体感更差。
+    """
+    t = str(text or "")
+    n = len(t)
+    toks: set = set()
+    for i in range(n - 1):                                        # ① 阿X
+        if t[i] == "阿" and "\u4e00" <= t[i + 1] <= "\u9fff":
+            toks.add(t[i:i + 2])
+    for suf in _PERSON_SUFFIXES:                                  # ② 称谓后缀
+        j = t.find(suf)
+        while j != -1:
+            head = ""
+            k = j - 1
+            while k >= 0 and j - k <= 3 and "\u4e00" <= t[k] <= "\u9fff" and t[k] not in _NAME_HEAD_STOP:
+                head = t[k] + head
+                k -= 1
+            if head:
+                for s in range(len(head)):
+                    toks.add(head[s:] + suf)
+                    if len(head[s:]) >= 2:
+                        toks.add(head[s:])
+            j = t.find(suf, j + 1)
+    for i in range(n - 2):                                        # ③ 姓+老/小+排行
+        if t[i] in COMMON_SURNAMES and t[i + 1] in "老小" and t[i + 2] in "一二三四五六七八九十百千幺大":
+            toks.add(t[i:i + 3])
+    for i in range(n - 2):                                        # ④ 姓+数字+称谓
+        if t[i] in COMMON_SURNAMES and t[i + 1] in "一二三四五六七八九十" and t[i + 2] in "娘郎哥姐婶":
+            toks.add(t[i:i + 3])
+    return {x for x in toks if len(x) >= 2 and x not in _PERSON_TOKEN_STOP}
+
+
+def _strip_tail_sentence(text: Any) -> str:
+    """正文去掉最后一句：闲话人物（「这几日听来几句闲话：南边有个柳三娘……」）
+    惯于藏在末句，正是选项绑架的源头。只剩一句时原文返回（那多半是主场景本身）。"""
+    t = str(text or "").strip()
+    chunks = [c for c in re.split(r"(?<=[。！？!?])", t) if c.strip()]
+    if len(chunks) <= 1:
+        return t
+    return "".join(chunks[:-1])
+
+
+def ground_choices(choices: list, state: dict, narrative: str, action_text: str) -> tuple[list, list]:
+    """选项人名落地校验：查无出处的人名选项作废，按序补兜底（不掷骰）。
+
+    出处 = 玩家输入 / 本轮正文（末句除外）/ 在册线索（标题+近况）/ 江湖名册（含曾用名）/
+    大事记 / 长期记忆 / 前尘摘要 / 最近几轮的行动与正文。
+    只查 explore / fight 选项——打坐买货类选项即使带人名也不会把人捧成主线。
+    """
+    parts: list = [str(action_text or ""), _strip_tail_sentence(narrative)]
+    for th in (state.get("threads") or []):
+        parts.append(str(th.get("title") or ""))
+        parts.append(str(th.get("note") or ""))
+    for npc in (state.get("npcs") or []):
+        parts.append(str(npc.get("name") or ""))
+        parts.extend(str(a) for a in (npc.get("alias") or []))
+    parts.extend(str(c) for c in (state.get("chronicle") or []))
+    parts.extend(str(m) for m in (state.get("memory") or []))
+    if state.get("memory_summary"):
+        parts.append(str(state["memory_summary"]))
+    for r in (state.get("recent") or []):
+        parts.append(str(r.get("action") or ""))
+        parts.append(str(r.get("narrative") or ""))
+    sources = "\n".join(p for p in parts if p and p.strip())
+    swaps: list = []
+    kept: list = []
+    tail: list = []
+    for c in choices or []:
+        if not isinstance(c, dict):
+            continue
+        if c.get("special"):                      # 冲关注入项不参与
+            tail.append(dict(c))
+            continue
+        if str(c.get("tag")) in ("explore", "fight"):
+            bad = [tok for tok in sorted(_person_tokens(str(c.get("text") or "")))
+                   if tok not in sources]
+            if bad:
+                swaps.append({"choice": str(c.get("text")), "names": bad[:2]})
+                continue
+        kept.append(dict(c))
+    if not swaps:
+        return choices, []
+    pool = [dict(x) for x in filler_choices(state)]
+    used = {str(c.get("text")) for c in kept}
+    while len(kept) < 3:
+        pick = next((p for p in pool if str(p.get("text")) not in used), pool[0])
+        kept.append({"id": "", "text": pick["text"], "risk": pick.get("risk", "mid"),
+                     "tag": pick.get("tag", "explore")})
+        used.add(str(pick["text"]))
+    for i, c in enumerate(kept):
+        c["id"] = "ABC"[i]
+    return kept + tail, swaps
 
 
 # ---- 句内防复读（v3.7）：开篇已在【文风禁用】里禁了，但真正的复读发生在段落内部 ----
@@ -2714,6 +2921,8 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
 19. 若收到【追索已滞】：玩家已连追同一件事数轮仍无结果，本轮必须给这件事一个交代——
     办成（并付出代价）/ 断干净（写明为何追不下去并 close 它）/ 换来确凿情报（姓名、地点、时日、物件），
     三选一。**严禁再写「一无所获、线索又断了」**。继续拖延会被天道强行收场，此事从此再无下文。
+    断干净不等于把人写死——优先写成查明了、事了了；确要写死，必须交代是谁、何时、何据，
+    且不得殃及玩家并未在追之人。
 20. 若收到【本轮机缘】：写明得到某物，就必须真把它写进叙事（何处所得、经过什么）；
     写明「并无实物入袋」，就不得再凭空赠宝，但仍须留下一条可追的线索，否则这一轮等于没发生过。
 21. 若收到【句式禁用】：列出的句子是最近几轮写过的原句，**严禁整句照抄**。
@@ -3669,6 +3878,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     expired = expire_overdue_threads(state)
     update_hop(state, action_tag, thread_res)   # 换乘：目标被搬到下一站的次数
     choices = normalize_choices(data.get("choices"), state)
+    # 人名落地（v3.10）：正文说阿菱、选项给柳三娘——查无出处的人名选项当场作废。
+    choices, ground_swaps = ground_choices(choices, state, narrative, action_text)
     choices, recall_used = ensure_thread_choice(choices, state)
     # ---- 追索停滞：逼到第 5 轮（或换乘 3 次）仍无结果 → 代码收场，给出下落 ----
     # 两条引信彼此独立：
@@ -3718,6 +3929,8 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
         "list": [{"title": t.get("title"), "cat": t.get("cat"), "open": t.get("open"),
                   "due": t.get("due")} for t in (state.get("threads") or [])],
     }
+    if ground_swaps:
+        meta["choice_grounding"] = {"swaps": ground_swaps}
     # ---- 追索停滞计数（v3.6）：本轮有没有拿到「实质产出」决定下轮要不要逼结果 ----
     # 杂物线索（残药纸、旧布囊之类）不算产出——正是这类碎片让「追查」看起来一直在推进。
     gained = bool(
@@ -3889,6 +4102,7 @@ def act(req: ActReq):
         #     计数要写进提示词（否则 AI 不知道自己已经重复了多少轮），
         #     机缘要写进剧情（否则行囊悄悄进账、剧情里两手空空）。
         update_stall(state, action_text)
+        open_player_thread(state, action_text, action_tag, action_type == "custom")
         stall_msg = stall_prompt_note(state)
         fortune = pre_roll_fortune(state, action_tag, tier)
         forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
@@ -3981,6 +4195,7 @@ def act_stream(req: ActReq):
                 pre_roll = action_exp(action_tag, tier, span == "short", span)
                 # 追索计数与机缘前置（v3.6）：与 /api/act 同序，两路不得分叉
                 update_stall(state, action_text)
+                open_player_thread(state, action_text, action_tag, action_type == "custom")
                 stall_msg = stall_prompt_note(state)
                 fortune = pre_roll_fortune(state, action_tag, tier)
                 forced_event = _seclusion_prompt_note(state, action_tag)   # 闭门造车 → 砸外界打扰事件
