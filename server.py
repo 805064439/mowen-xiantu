@@ -34,7 +34,7 @@ BASE_DIR = Path(__file__).parent
 
 # 版本号：与前端 src/game/constants.ts 的 VERSION 同源（tests/frontend/constants.spec.ts 盯着）。
 # 界面页脚右下角显示它——没有这一个锚点，就分不清屏幕上跑的是哪一版代码。
-VERSION = "3.12.2"
+VERSION = "3.12.3"
 
 # ---------------------------------------------------------------- .env 加载（零依赖）
 def _load_dotenv() -> None:
@@ -2094,6 +2094,24 @@ def _looks_like_person(label: Any) -> bool:
     return not any(w in s for w in _ITEM_LIKE_WORDS)
 
 
+def _takeover_who(label: Any, action_text: str = "") -> str:
+    """收场该把「谁」送到玩家眼前——台账线名不是人时，听玩家自己话里的。
+
+    线上实测（2026-09-25 v3.12.2 验证，连打「去寻阿菱」）：AI 把这条追索挂在
+    自己命名的「崖东药庐」线上，收场于是写成「那东西竟就在前头……上前细看明白」。
+    玩家追的是人，读到的却是逐个物件——v3.11 定的「追索认台账线」在收场这一步
+    反而误事。故：线名认得出是人就用线名；线名是物/地而玩家原话里有强人名
+    （阿菱 / 沈船家 / 陈老六 这类 _person_tokens 认得出的），就听玩家的。
+    """
+    who = _pursuit_head(str(label or ""))[:STALL_LABEL_MAX]
+    if who and _looks_like_person(who):
+        return who
+    toks = sorted(_person_tokens(action_text), key=len, reverse=True)
+    if toks:
+        return toks[0][:STALL_LABEL_MAX]
+    return who
+
+
 def takeover_choices(choices: list, label: str, action_text: str) -> list:
     """收场后的选项：人都找到了，第一条就得是上去说话。
 
@@ -2120,7 +2138,9 @@ def takeover_choices(choices: list, label: str, action_text: str) -> list:
     # 收场是把人送到了眼前，不是把人收走——所以头一条永远是去跟他说话。
     # 但对象未必是人：AI 立的线常拿物/地当标题，照直拼成「上前与渡口残图搭话」
     # 当场就成了笑话。这类线给「上前看个明白」，同样把玩家推到目标跟前。
-    who = _pursuit_head(str(label or ""))[:STALL_LABEL_MAX]
+    # v3.12.3：线名是物/地、而玩家原话里有强人名时，以玩家追的人为准
+    # （否则追阿菱的人会收到「上前细看明白」）。
+    who = _takeover_who(label, action_text)
     if who and _looks_like_person(who):
         talk = f"上前与{who}搭话，当面问个明白"
     elif who:
@@ -4131,7 +4151,10 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
             hit["chase"] = 0
             hit["last"] = turn_now
             hit["due"] = turn_now + THREAD_DUE_TURNS
-        narrative = narrative + (STALL_TAKEOVER_TEXT if _looks_like_person(label)
+        # v3.12.3：口径由「收场该送到眼前的是谁」决定——玩家原话里的人名优先于
+        # AI 给线起的物/地名，否则追阿菱的人会收到「那东西竟就在前头」。
+        who_out = _takeover_who(label, action_text)
+        narrative = narrative + (STALL_TAKEOVER_TEXT if _looks_like_person(who_out)
                                  else STALL_TAKEOVER_ITEM_TEXT)
         memory_line = memory_line or f"{label}{line}"
         # 收场文案说「下落已明」，选项就不能还指着下一站（2026-09-23 线上实测的残留矛盾）

@@ -194,3 +194,30 @@ class TestTakeoverKnowsAThingFromAPerson:
         assert engine.STALL_TAKEOVER_TEXT in narrative, narrative[-80:]
         assert engine.STALL_TAKEOVER_ITEM_TEXT not in narrative
         assert "搭话" in choices[1]["text"], choices[1]["text"]
+
+
+# ---------------------------------------------------------------- 追的是人，收场就得见人
+# 2026-09-25 v3.12.2 线上实测（连打「去寻阿菱」）：AI 把这条追索挂在自己命名的
+# 「崖东药庐」线上，收场于是写成「那东西竟就在前头……上前细看明白」。
+# 玩家追的是人，读到的却是逐个物件——v3.11 定的「追索认台账线」在收场这步误事了。
+class TestTakeoverTargetFollowsThePlayer:
+    def test_a_thing_line_gives_way_to_the_person_you_named(self, engine):
+        """线名是地（崖东药庐），玩家原话里有人名（阿菱）→ 收场按人办。"""
+        assert engine._takeover_who("崖东药庐", "去寻阿菱") == "阿菱"
+        assert engine._looks_like_person(engine._takeover_who("崖东药庐", "去寻阿菱")) is True
+
+    def test_a_person_line_keeps_its_own_name(self, engine):
+        """线名本身是人，就别去玩家话里另找——台账线才是这轮认定的追索目标。"""
+        assert engine._takeover_who("溪畔女子", "去寻阿菱") == "溪畔女子"
+
+    def test_a_thing_line_without_a_name_stays_a_thing(self, engine):
+        assert engine._takeover_who("渡口残图", "渡口残图") == "渡口残图"
+        assert engine._looks_like_person(engine._takeover_who("渡口残图", "度口寻去")) is False
+
+    def test_end_to_end_the_player_gets_the_person(self, engine, base_state):
+        engine.apply_thread_updates(
+            base_state, {"thread_updates": [{"op": "open", "title": "崖东药庐", "note": "崖下药庐"}]})
+        _, narrative, choices = _takeover(engine, base_state, action="去寻阿菱")
+        assert engine.STALL_TAKEOVER_TEXT in narrative, narrative[-80:]
+        assert engine.STALL_TAKEOVER_ITEM_TEXT not in narrative
+        assert "阿菱" in choices[1]["text"], [c["text"] for c in choices]
