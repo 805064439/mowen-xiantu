@@ -34,7 +34,7 @@ BASE_DIR = Path(__file__).parent
 
 # 版本号：与前端 src/game/constants.ts 的 VERSION 同源（tests/frontend/constants.spec.ts 盯着）。
 # 界面页脚右下角显示它——没有这一个锚点，就分不清屏幕上跑的是哪一版代码。
-VERSION = "3.12.3"
+VERSION = "3.12.4"
 
 # ---------------------------------------------------------------- .env 加载（零依赖）
 def _load_dotenv() -> None:

@@ -215,10 +215,12 @@ h1{font-size:15px; font-weight:600; color:var(--ink-soft); letter-spacing:4px;}
 @keyframes fxPulse{0%,100%{opacity:.55; transform:scale(1);} 50%{opacity:1; transform:scale(1.18);}}
 
 /* ---------- 行动类型徽标：让「选它会不会更快」在点之前就看得见 ---------- */
+/* 徽标是按钮里的独立一列（右侧信息列：徽标 + 稳/常/险），不参与句子排版。
+   v3.12.4 之前它在 .ctext 里跟着文字流走，14 字以上的行动就把它顶到第二行。 */
 .ctag{
-  display:inline-block; margin-left:8px; padding:1px 7px; white-space:nowrap;
+  flex:none; padding:1px 7px; white-space:nowrap;
   font-size:11px; letter-spacing:.5px; border-radius:9px;
-  border:1px solid var(--line2); color:var(--muted); vertical-align:1px;
+  border:1px solid var(--line2); color:var(--muted);
   transition:color .18s, border-color .18s;
 }
 .ctag.tag-fast{border-color:rgba(154,123,45,.55); color:var(--gold);}
@@ -335,7 +337,11 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
   transition:all .18s;
 }
 #btn-journal:hover{background:var(--c-qi); color:#f2ecdd; border-color:var(--c-qi);}
-.foot-btns{display:flex; gap:8px; align-items:center;}
+.foot-btns{display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center;}
+/* 页脚按钮一律不折字：一排放不下就让「整颗按钮」换行，绝不把「对局日志」
+   从中间劈成两行——窄屏（≈390px 的机型）原本就是这么被挤坏的。
+   用后代选择器而非逐个 id，新加的页脚按钮自动继承这条契约。 */
+.foot-btns button{white-space:nowrap;}
 /* 版本号：排查「线上到底跑哪一版」的唯一锚点。刻意做淡，不抢版面，
    但必须始终可见——没有它就只能靠 asset 哈希反推。 */
 #ver{font-family:inherit; font-size:11.5px; letter-spacing:1px; color:var(--muted);
@@ -458,6 +464,21 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
   .bar-val{width:56px;}
   #bt-flash .bt-word{font-size:34px; letter-spacing:9px;}
   footer{flex-direction:column; align-items:center; gap:6px;}
+  /* 窄屏把页脚按钮收紧到一行放得下：字号不动（11.5px 已是下限），
+     只收字距与左右留白。五枚合计约 322px，375px 视口（可用 355px）有余量。 */
+  .foot-btns{gap:6px;}
+  #ver{letter-spacing:.5px;}
+  #btn-shop,#btn-journal,#btn-savecode,#btn-restart{padding:3px 10px; letter-spacing:1px;}
+  /* 选项行同理：窄屏每一像素都要还给行动句子本身——
+     「15px 字号 + 11px 内边距 + 12px 间距」在 390px 上会把
+     14 字的行动挤到换行，收紧后同样长度的行动能一行站住。 */
+  .choice{font-size:14.5px; padding:9px 10px; gap:6px;}
+  .cid{width:20px; height:20px;}
+  .ctag{font-size:10.5px; padding:1px 6px; letter-spacing:0;}
+  /* 窄屏徽标只留耗时：「探索 · 」这三个字要吃掉约 42px，
+     恰好是一句行动最后两三个字的位置——留不留它，决定折行还是站住。 */
+  .ctag-kind{display:none;}
+  .chint{font-size:11.5px; margin-top:4px;}
 }
 
 /* ================= 吸顶迷你状态条 ================= */

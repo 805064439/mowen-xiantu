@@ -35,22 +35,31 @@ function riskTxt(c: Choice) {
     (c.risk === "low" ? "稳" : c.risk === "high" ? "险" : "常");
 }
 
-/** 行动徽标：冲关不参与修炼系数，不显示倍率；探索显示三档，其余按 tag 显示「修行 ×1.8」或「±40%」波动 */
-function actBadge(c: Choice): { label: string; text: string; fast: boolean; volatile: boolean } {
-  if (c.special === "breakthrough") return { label: "冲关", text: "冲关", fast: false, volatile: false };
+/** 行动徽标：冲关不参与修炼系数，不显示倍率；探索显示三档，其余按 tag 显示「修行 ×1.8」或「±40%」波动
+ *
+ *  tail 是「只留耗时」的那一半，供窄屏用：手机上「探索 · 」这三个字要吃掉
+ *  约 42px，恰好是一句行动最后两三个字的位置——留着它，14 字的行动就会被
+ *  挤成「……驿卜 / 三」。类型名在窄屏由颜色与句子本身承担。 */
+function actBadge(c: Choice): { label: string; text: string; tail: string;
+                                fast: boolean; volatile: boolean } {
+  if (c.special === "breakthrough") {
+    return { label: "冲关", text: "冲关", tail: "冲关", fast: false, volatile: false };
+  }
   const info = actionInfo(c.tag);
   if (c.tag === "explore") {
     // 探索档位只看风险档：这决定了耗时、掉率与性命风险。
     // v3.4：徽标改摆时长（档位名仍在悬停里）——探索一档就是 25~60 天，
     // 只写「远行历练」，玩家点下去前根本不知道会被推进一个月。
     const tier = exploreTierOfRisk(c.risk);
-    return { label: info.label, text: `探索 · ${spanHint(...tier.days)}`, fast: false, volatile: true };
+    return { label: info.label, text: `探索 · ${spanHint(...tier.days)}`,
+             tail: spanHint(...tier.days), fast: false, volatile: true };
   }
   // 其余一律把「要过多久」摆到台面上——点之前不知道是几天还是五年，是最伤的体感问题。
   // 修为按天产出，所以耗时即收益：看见「约5年」才明白这一下的分量。
   return {
     label: info.label,
     text: `${info.label} · ${actionSpanHint(c.tag, c.span)}`,
+    tail: actionSpanHint(c.tag, c.span),
     fast: info.coeff > 1,
     volatile: riskVolatility(c.tag) > 0,
   };
@@ -101,12 +110,16 @@ function retry() {
         <span class="cid">{{ c.id || "·" }}</span>
         <span class="ctext">
           {{ c.text }}
-          <span v-if="c.special !== 'breakthrough'" class="ctag"
-                :class="[actBadge(c).fast ? 'tag-fast' : 'tag-slow', actBadge(c).volatile ? 'tag-vol' : '']"
-                :title="actTitle(c)">
-            {{ actBadge(c).text }}
-          </span>
           <span v-if="c.hint" class="chint">{{ c.hint }}</span>
+        </span>
+        <!-- 徽标是「标签」，不该跟行动句子抢同一行：留在文字流里时，
+             一句 14 字的行动就会被它顶到第二行——手机上一整列选项
+             全是两行，根因就在这。挪出来当按钮的独立一列后，
+             短行动一行放得下，长行动也折得整齐。 -->
+        <span v-if="c.special !== 'breakthrough'" class="ctag"
+              :class="[actBadge(c).fast ? 'tag-fast' : 'tag-slow', actBadge(c).volatile ? 'tag-vol' : '']"
+              :title="actTitle(c)">
+          <span class="ctag-kind">{{ actBadge(c).label }} · </span>{{ actBadge(c).tail }}
         </span>
         <span v-if="c.tag === 'fight'" class="fx-badge" title="斗法">⚔</span>
         <span class="risk" :class="riskCls(c.risk)">{{ riskTxt(c) }}</span>

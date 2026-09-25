@@ -53,4 +53,24 @@ describe("页脚按钮：每个都得有配套样式", () => {
     expect(g).toContain("display:flex");
     expect(g).toContain("gap:");
   });
+
+  /* 事故回顾：页脚五枚（版本号 + 坊市/对局日志/仙缘令/再入轮回）合计约 378px，
+     390px 机型可用宽只有 370px —— flex 默认 nowrap 会去压缩子项，四字按钮
+     「对局日志」就被从中间劈成两行。修法是「放不下就让整颗按钮换行」，
+     而不是「把按钮里的字挤断」。 */
+  it("放不下时整颗按钮换行，而不是把按钮文字折成两行", () => {
+    const group = rule(".foot-btns");
+    expect(group, "按钮组缺 flex-wrap:wrap —— 窄屏会压缩子项把文字挤断")
+      .toContain("flex-wrap:wrap");
+    const btn = rule(".foot-btns button");
+    expect(btn, "页脚按钮缺 white-space:nowrap，窄屏文字会折行").toContain("white-space:nowrap");
+  });
+
+  it("窄屏收紧了字距与留白，让五枚仍能挤在一行", () => {
+    const narrow = cssSrc.match(/@media \(max-width:480px\)\{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(narrow, "没找到窄屏媒体查询块").not.toBe("");
+    expect(narrow, "窄屏没为按钮组收间距").toMatch(/\.foot-btns\{[^}]*gap:6px/);
+    expect(narrow, "窄屏没为页脚按钮收留白/字距")
+      .toMatch(/#btn-shop,#btn-journal,#btn-savecode,#btn-restart\{[^}]*letter-spacing:1px/);
+  });
 });
