@@ -6,7 +6,7 @@ import type { GameAction, GameState, Choice, ActResponse, ScenePara, FloatItem, 
 import { REALMS, OPENING, INIT_CHOICES, coeffLabel, daysText, VERSION } from "../game/constants";
 import {
   readSave, writeSave, removeSave, freshState, SAVE_KEY,
-  loadReincarnations, saveReincarnations,
+  loadReincarnations, saveReincarnations, loadCycleCount, bumpCycleCount,
   encodeSaveCode, decodeSaveCode,
 } from "../game/storage";
 import {
@@ -378,7 +378,8 @@ async function init() {
 }
 
 function requestRestart() {
-  const n = loadReincarnations().length;
+  // 世数走独立计数：名册封顶 5 条，拿它当世数会永远停在「第 6 段」
+  const n = loadCycleCount();
   game.confirmText = (n === 0
     ? "重开将抹去今生所有修行、记忆与际遇。"
     : `重开将抹去今生——但江湖会记得。此去，已是第 ${n + 1} 段轮回。`);
@@ -388,6 +389,7 @@ function requestRestart() {
 function confirmRestart() {
   game.confirmOpen = false;
   pushReincarnation();
+  bumpCycleCount();    // 又走完一世——名册可以淘汰，世数只增不减
   rotateSession();     // 日志保留，但换一批次号，便于跨轮回对照
   removeSave();
   newGame(true);

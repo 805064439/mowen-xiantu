@@ -1,13 +1,16 @@
 /* 存档持久化：localStorage 读写、容错、轮回名册、自由输入历史 */
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  SAVE_KEY, REINC_KEY, HISTORY_KEY,
+  SAVE_KEY, REINC_KEY, HISTORY_KEY, CYCLE_KEY,
   freshState, readSave, writeSave, removeSave,
   loadReincarnations, saveReincarnations,
+  loadCycleCount, saveCycleCount, bumpCycleCount,
   loadHistory, pushHistory,
   encodeSaveCode, decodeSaveCode,
 } from "../../src/game/storage";
 import type { GameState } from "../../src/game/types";
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 
 /* 自带一份内存 localStorage：不依赖 happy-dom 的实现细节，
    且能在需要时注入异常来模拟「存储已满 / 隐私模式」场景 */
@@ -130,6 +133,57 @@ describe("轮回名册", () => {
       realm: "炼气一层", turn: i, memory: [],
     })));
     expect(loadReincarnations()).toHaveLength(5);
+  });
+});
+
+describe("轮回世数", () => {
+
+  it("从未重开时是 0", () => {
+    expect(loadCycleCount()).toBe(0);
+  });
+
+  it("每重开一世 +1，且能越过名册上限继续涨", () => {
+    for (let i = 1; i <= 10; i++) expect(bumpCycleCount()).toBe(i);
+    expect(loadCycleCount()).toBe(10);
+  });
+
+  it("名册封顶 5 条后世数照样动（卡在「第 6 段」的回归）", () => {
+    // 名册只留最近 5 条，所以拿它当世数会永远算成 5 → 提示永远是「第 6 段」
+    saveReincarnations(Array.from({ length: 9 }, (_, i) => ({
+      realm: "炼气一层", turn: i, memory: [],
+    })));
+    expect(loadReincarnations()).toHaveLength(5);
+    saveCycleCount(5);
+    expect(bumpCycleCount()).toBe(6);
+    expect(bumpCycleCount()).toBe(7);
+  });
+
+  it("旧档升级：没有计数键时按名册条数起算", () => {
+    saveReincarnations([{ realm: "筑基初期", turn: 9, memory: [] },
+                        { realm: "炼气九层", turn: 4, memory: [] }]);
+    expect(localStorage.getItem(CYCLE_KEY)).toBeNull();
+    expect(loadCycleCount()).toBe(2);
+    expect(localStorage.getItem(CYCLE_KEY)).toBe("2");   // 顺手落盘
+  });
+
+  it.each([["abc", 0], ["-3", 0], ["", 0]])(
+    "脏数据归零：%s", (raw, want) => {
+      localStorage.setItem(CYCLE_KEY, raw);
+      expect(loadCycleCount()).toBe(want);
+    });
+
+  it("存储不可用时不抛异常", () => {
+    installMemoryStorage({ throwOnSet: true });
+    expect(() => bumpCycleCount()).not.toThrow();
+    expect(loadCycleCount()).toBe(0);
+  });
+
+  it("重开确认文案的段数取自世数，不取名册长度", () => {
+    const src = readFileSync(path.join(process.cwd(), "src/stores/game.ts"), "utf-8");
+    const fn = src.slice(src.indexOf("function requestRestart()"));
+    expect(fn).toContain("loadCycleCount()");
+    expect(fn).not.toContain("loadReincarnations().length");
+    expect(fn).toContain("第 ${n + 1} 段轮回");
   });
 });
 

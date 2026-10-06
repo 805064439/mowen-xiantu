@@ -7,6 +7,8 @@ import { INIT_STATE } from "./constants";
 export const SAVE_KEY = "mowen_save_v1";
 export const REINC_KEY = "mowen_reincarnations_v1";
 export const HISTORY_KEY = "mowen_history_v1";
+/** 走过的世数（已完成并抹去的轮回条数）——与名册分开存，见 loadCycleCount */
+export const CYCLE_KEY = "mowen_cycle_count_v1";
 
 export interface SaveFile {
   v: 1;
@@ -22,6 +24,32 @@ export function loadReincarnations(): Reincarnation[] {
 
 export function saveReincarnations(list: Reincarnation[]) {
   try { localStorage.setItem(REINC_KEY, JSON.stringify(list.slice(0, 5))); } catch (e) { /* 忽略 */ }
+}
+
+/* 世数：名册只留最近 5 条（要塞进提示词当「江湖传说」，不能无限长），
+   所以**绝不能用名册长度当世数**——满了 5 条就永远停在「第 6 段」。
+   世数单独存一个只增不减的整数。 */
+export function loadCycleCount(): number {
+  const raw = localStorage.getItem(CYCLE_KEY);
+  if (raw === null || raw === "") {
+    // 旧档升级：没有计数键时，以名册里躺着的条数起算（老玩家的 5 条 → 从 5 接着走）
+    const n = loadReincarnations().length;
+    saveCycleCount(n);
+    return n;
+  }
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+export function saveCycleCount(n: number) {
+  try { localStorage.setItem(CYCLE_KEY, String(Math.max(0, n | 0))); } catch (e) { /* 忽略 */ }
+}
+
+/** 又走完一世：世数 +1。名册有没有记上是另一回事（开局即重开无名册可记）。 */
+export function bumpCycleCount(): number {
+  const n = loadCycleCount() + 1;
+  saveCycleCount(n);
+  return n;
 }
 
 export function loadHistory(): string[] {
