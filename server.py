@@ -34,7 +34,7 @@ BASE_DIR = Path(__file__).parent
 
 # 版本号：与前端 src/game/constants.ts 的 VERSION 同源（tests/frontend/constants.spec.ts 盯着）。
 # 界面页脚右下角显示它——没有这一个锚点，就分不清屏幕上跑的是哪一版代码。
-VERSION = "3.12.5"
+VERSION = "3.13.0"
 
 # ---------------------------------------------------------------- .env 加载（零依赖）
 def _load_dotenv() -> None:
@@ -427,8 +427,12 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
     if buff_now > 0:
         eff_bonus += ELIXIR_EFF_BUFF
     eff_coeff = 1.0 + eff_bonus
+    # 师徒结契（v3.13 N3）：名师指点，少走弯路。同样只作用于修行类
+    #（探索不吃，防止「越探索越强」的滚雪球）；无契时 1.0，基线不动。
+    pact_coeff = PACT_MASTER_EFF_MULT if (action_tag in TREASURE_EFF_TAGS
+                                         and pact_of(state, "master")) else 1.0
     total = (root_coeff * action_coeff * streak_coeff * vitality_coeff
-             * seclusion_coeff * risk_coeff * eff_coeff)
+             * seclusion_coeff * risk_coeff * eff_coeff * pact_coeff)
 
     if risk_coeff > 1.001:
         risk_label = "机缘"
@@ -452,6 +456,7 @@ def cultivate_multiplier(state: dict, action_tag: str, risk_roll: float | None =
         "capped": False,
         "eff": round(eff_coeff, 3),          # 机缘效率乘数（1.0 = 无加成）
         "eff_bonus": round(eff_bonus, 3),
+        "pact": round(pact_coeff, 2),        # 师徒结契效率乘数（1.0 = 无契，见 PACT_MASTER_EFF_MULT）
         "elixir_buff": buff_now,             # 灵丹 buff 剩余轮数（0 = 未服丹）
     }
     return total, detail
@@ -944,7 +949,12 @@ def pre_roll_fortune(state: dict, action_tag: str, tier: str | None) -> dict:
     tspec = EXPLORE_TIERS.get(tk, EXPLORE_TIERS[DEFAULT_EXPLORE_TIER])
     if tspec["death"] > 0 and random.random() < tspec["death"]:
         return {"kind": "death"}
-    if tspec["drop"] > 0 and random.random() < tspec["drop"]:
+    drop = tspec["drop"]
+    # 结拜同行（v3.13 N3）：兄弟在外多一分照应——只乘概率，不增随机调用次数，
+    # 无契时 ×1.0，仿真基线不受影响。
+    if drop > 0 and pact_of(state, "sworn"):
+        drop = min(drop * PACT_SWORN_DROP_MULT, 0.5)
+    if drop > 0 and random.random() < drop:
         key = roll_treasure(tk)
         if _treasure_room(state, key):
             return {"kind": "treasure", "key": key, "name": TREASURE[key]["name"]}
@@ -1299,6 +1309,44 @@ def compress_memory(state: dict) -> bool:
     return True
 
 
+# ---------------------------------------------------------------- 地理（v3.13）
+# 地名是本项目的高压线：v3.11 追索 bug 的根源正是 AI 每轮换地名、指纹失效。
+# 所以地点一律白名单——AI 只能在这张表里「申报」移动，编地名直接丢弃，
+# 叙事里的地名也只能出自此表（见铁律 23）。
+LOCATIONS = {
+    "qingniu_shan":   {"name": "青牛山",   "kind": "山门", "desc": "主角栖身的破落山门，灵脉稀薄，人迹罕至"},
+    "qingniu_zhen":   {"name": "青牛镇",   "kind": "城镇", "desc": "山下小镇，坊市商贾云集，三教九流混杂"},
+    "qingfeng_du":    {"name": "青枫渡",   "kind": "渡口", "desc": "官道要津，南来北往的消息都在此集散"},
+    "wushan_zhen":    {"name": "乌山镇",   "kind": "城镇", "desc": "西陲矿镇，散修与镖客讨生活的地方"},
+    "yueling":        {"name": "越岭",     "kind": "险地", "desc": "绵延数百里的深山老林，妖兽盘踞"},
+    "heifeng_zhai":   {"name": "黑风寨",   "kind": "险地", "desc": "恶名昭彰的匪寨，寨中修士打家劫舍"},
+    "beihuang_ze":    {"name": "北荒泽",   "kind": "秘境", "desc": "大泽万里，传闻有上古灵脉与凶兽同眠"},
+    "wangxian_cheng": {"name": "望仙城",   "kind": "大城", "desc": "方圆千里第一雄城，宗门驻跸，规矩森严"},
+}
+DEFAULT_LOCATION = "qingniu_shan"
+
+
+def location_key_of(raw: Any) -> str | None:
+    """地名 → 白名单键。剥掉「去/往/赴/至/到/回」前缀后精确匹配，表外地名一律 None。"""
+    s = re.sub(r"^[去往赴至到回]\s*", "", str(raw or "").strip())
+    for k, v in LOCATIONS.items():
+        if v["name"] == s:
+            return k
+    return None
+
+
+def apply_location_update(state: dict, data: dict) -> str | None:
+    """AI 申报移动 → 白名单裁决。返回目的地名（未移动/编地名则 None）。"""
+    u = data.get("location_update")
+    if not isinstance(u, dict):
+        return None
+    key = location_key_of(u.get("to"))
+    if key is None or key == state.get("location"):
+        return None
+    state["location"] = key
+    return LOCATIONS[key]["name"]
+
+
 # ---------------------------------------------------------------- 江湖人物（NPC 道缘）
 NPC_MAX = 6            # 相识上限：边缘人物自然淡忘
 NPC_DELTA_CAP = 20     # 单轮道缘变化上限
@@ -1310,6 +1358,30 @@ NPC_TEACH_COOLDOWN = 3
 NPC_EVENT_REPEAT_COOLDOWN = 10
 NPC_ALIAS_MAX = 4          # 一人最多记几个曾用名（供后续回合认人）
 NPC_FUZZY_MIN = 2          # 参与模糊比对的最短字数（单字不比，免得张冠李戴）
+
+# ---- 玩家主动操作（v3.13 · /api/npc）----
+# 防刷三重阀门：① 道缘收益随好感衰减（越熟越难再进一步）② 同一人操作有轮次冷却 ③ 每次操作耗天数。
+NPC_OP_COOLDOWNS = {"gift": 3, "talk": 5, "ask": 5, "spar": 3}
+NPC_OP_DAYS = {"gift": 2, "talk": 30, "ask": 3, "spar": 5, "pact": 7}   # 登门 / 坐而论道 / 打探 / 切磋 / 结契仪式
+NPC_GIFT_MIN_BOND = -20      # 敌视至此不收礼——礼不是万能的
+NPC_TALK_MIN_BOND = 30       # 论道门槛：至少友善
+NPC_ASK_MIN_BOND = 20        # 打听门槛：肯对你说真话
+NPC_SPAR_MIN_BOND = -20      # 再低就是真仇杀（走 vendetta），不存在点到为止
+NPC_GIFT_STONE_VALUE = 10    # 每 10 枚灵石折 1 点道缘（衰减前）
+NPC_GIFT_ITEM_VALUE = {"下品": 6, "中品": 14, "上品": 28}
+NPC_TALK_EXP_RATIO = 0.06    # 论道得修为 = 当前层需求的 6%
+
+# ---- 结契（v3.13 · N3）----
+# bond ≥ 90 可结契；每种契同时最多一人。buff 数值刻意保守（见各挂载点注释）。
+NPC_PACT_BOND = 90
+PACT_TYPES = {
+    "sworn":     {"label": "结拜", "ritual": "歃血为盟，指天为誓"},
+    "master":    {"label": "师徒", "ritual": "执弟子礼，奉茶拜见"},
+    "companion": {"label": "道侣", "ritual": "互换信物，同参大道"},
+}
+PACT_SWORN_DROP_MULT = 1.2   # 结拜：探索机缘掉率 ×1.2（兄弟在外，多一分照应）
+PACT_MASTER_EFF_MULT = 1.05  # 师徒：修炼效率 ×1.05（名师指点，少走弯路）
+PACT_COMPANION_REST_MULT = 1.25  # 道侣：静养续命效果 ×1.25（调息有人护持）
 
 # 姓名里常见、对身份没有贡献的敬称/身份后缀：剥掉后再比一次
 NPC_NAME_NOISE = ("姑娘", "公子", "道友", "前辈", "老丈", "老怪", "老祖", "尊者", "仙子",
@@ -1423,6 +1495,18 @@ def bond_label(bond: int) -> str:
     if bond < 80:
         return "亲近"
     return "生死之交"
+
+
+def pact_of(state: dict, ptype: str) -> dict | None:
+    """名册里持某种结契的人（每种契同时最多一人）。无契返回 None。
+
+    N3 的三处 buff（机缘/效率/静养）都从这里出发——找不到人就没有加成，
+    数值层不用关心「是谁」。
+    """
+    for n in (state.get("npcs") or []):
+        if (n.get("pact") or {}).get("type") == ptype:
+            return n
+    return None
 
 
 def apply_npc_updates(state: dict, data: dict) -> list:
@@ -2465,6 +2549,15 @@ def sanitize_state(raw: dict) -> dict:
         fired = {k: clamp(_to_int(v, 0), 0, 9999)
                  for k, v in fired_raw.items() if k in ("gift", "teach", "vendetta")}
         alias = [str(a).strip()[:12] for a in (n.get("alias") or []) if str(a).strip()]
+        # 结契（v3.13）：白名单类型 + 冷却记录（玩家主动操作的轮次阀门）
+        pact_raw = n.get("pact") if isinstance(n.get("pact"), dict) else {}
+        pact = {}
+        if pact_raw.get("type") in PACT_TYPES:
+            pact = {"type": pact_raw["type"],
+                    "turn": clamp(_to_int(pact_raw.get("turn"), 0), 0, 9999)}
+        opcd_raw = n.get("op_cd") if isinstance(n.get("op_cd"), dict) else {}
+        op_cd = {k: clamp(_to_int(v, -999), -999, 9999)
+                 for k, v in opcd_raw.items() if k in NPC_OP_COOLDOWNS}
         npcs.append({
             "name": name,
             "title": str(n.get("title", "")).strip()[:8] or "江湖人",
@@ -2472,6 +2565,8 @@ def sanitize_state(raw: dict) -> dict:
             "met_turn": clamp(_to_int(n.get("met_turn"), 0), 0, 9999),
             "fired": fired,
             "alias": alias[-NPC_ALIAS_MAX:],     # 曾用名：让走样的写法也能认出本人
+            "pact": pact,
+            "op_cd": op_cd,
         })
     # 老存档自愈：同一人被拆成两张卡的，读档时并回一张
     npcs = dedupe_npcs(npcs)
@@ -2546,6 +2641,8 @@ def sanitize_state(raw: dict) -> dict:
         "dry": _int(raw.get("dry"), 0, 99, 0),
         "hop": _int(raw.get("hop"), 0, 99, 0),   # v3.8：换乘次数（线索被搬到下一站的次数）
         "chronicle": sanitize_chronicle(raw.get("chronicle")),
+        # ---- 地理（v3.13）：当前所在，白名单；老档缺键 → 开局山门 ----
+        "location": raw.get("location") if raw.get("location") in LOCATIONS else DEFAULT_LOCATION,
     }
 
 
@@ -3163,6 +3260,9 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
     同一件事完全可以再写，但必须换句式、换用词、换视角；照抄即视为叙事失败。
 22. 【最近剧情】里的每条都带轮次与历时天数，那是确凿的先后次序：
     不得让已发生的结果被推翻，也不得把相隔数月的两件事写成紧接着发生。
+23. 【所在舆地】给出你此刻的位置与天下去处白名单。narrative 中的地名只能取自白名单原文；
+    若本轮玩家移步去了另一处，就在 location_update 里申报 {"to": "目的地地名"}（表内原文），
+    未移步则省略该字段。表外地名、申报表外去处，均为失败输出。
 
 【输出 json 结构】
 {
@@ -3178,6 +3278,7 @@ SYSTEM_PROMPT = """你是修仙文字游戏《墨问仙途》的叙事引擎。�
   },
   "npc_updates": [{"name": "……", "title": "……", "delta": 0}],
   "thread_updates": [{"op": "open|advance|close", "title": "……", "cat": "机缘|恩怨|疑窦|人情", "note": "……"}],
+  "location_update": {"to": "……"},   /* 仅当本轮移步时输出，可省略 */
   "memory": "……"
 }"""
 
@@ -3203,6 +3304,16 @@ def build_user_prompt(state: dict, action: dict, trial_text: str, root_newly: bo
                       fortune: dict | None = None) -> str:
     seg = []
     seg.append("【当前状态】\n" + json.dumps(build_state_brief(state), ensure_ascii=False, indent=1))
+    # 所在舆地（v3.13 M1）：地名是高压线——AI 每轮换地名曾是追索 bug 的根源，
+    # 所以位置由状态说了算、白名单约束写作，AI 只能「申报」移动。
+    loc = LOCATIONS.get(state.get("location"), LOCATIONS[DEFAULT_LOCATION])
+    seg.append(
+        "【所在舆地】\n"
+        f"你此刻身在【{loc['name']}】（{loc['kind']}）——{loc['desc']}。\n"
+        "天下去处只有这些（白名单）：" + "、".join(v["name"] for v in LOCATIONS.values()) + "。\n"
+        "narrative 里出现的地名一律取自白名单原文，不得编造表外地名，也不得把白名单外"
+        "的地名当作去处；若本轮玩家确实动身去了另一处，就在 location_update 里申报目的地。"
+    )
     if state.get("memory_summary"):
         seg.append("【前尘摘要】（更早的旧事，史官笔录，可作背景自然化用）\n" + state["memory_summary"])
     if state.get("chronicle"):
@@ -4101,7 +4212,10 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
             bonus_now = _to_float(state.get("life_bonus"), 0.0)
             cur_life = _to_int(state.get("lifespan"), 132)
             base_ls = max(100, cur_life - int(bonus_now))       # 剥离已含的续命，得基础寿元
-            bonus_new = min(bonus_now + REST_LIFE_BONUS, base_ls * REST_LIFE_BONUS_CAP)
+            # 道侣结契（v3.13 N3）：调息有人护持，静养续命效果 ×1.25。
+            # 只放大每轮的增量（封顶仍按基础寿元的 20%），无契时 ×1.0，基线不动。
+            rest_mult = PACT_COMPANION_REST_MULT if pact_of(state, "companion") else 1.0
+            bonus_new = min(bonus_now + REST_LIFE_BONUS * rest_mult, base_ls * REST_LIFE_BONUS_CAP)
             gained = int(bonus_new) - int(bonus_now)            # 只在跨过整岁时真正加到寿元上
             state["life_bonus"] = round(bonus_new, 1)
             if gained > 0:
@@ -4112,6 +4226,10 @@ def _postprocess_turn(state: dict, data: dict, meta: dict, action_text: str,
     check_npc_events(state)
     # ---- 未决之事台账：AI 提议 → 代码裁决（开 / 推 / 收 / 丢），随后扫逾期沉底 ----
     thread_res = apply_thread_updates(state, data)
+    # ---- 舆地申报（v3.13 M1）：AI 只能申报白名单内的移动，编地名就地丢弃 ----
+    moved_to = apply_location_update(state, data)
+    if moved_to:
+        meta["location_moved"] = moved_to
     expired = expire_overdue_threads(state)
     update_hop(state, action_tag, thread_res, action_text)   # 换乘：目标被搬到下一站的次数
     # 「已追几轮」以台账为准：AI 每轮把人搬个地名，换汤不换药，只有这条线是同一个。
@@ -4288,6 +4406,222 @@ def shop(req: ShopReq):
         }
 
     return {"ok": False, "error": {"code": "UNKNOWN_OP", "message": "未知操作"}}
+
+
+# ---------------------------------------------------------------- 江湖往来（v3.13 N2/N3：玩家对 NPC 的主动操作）
+class NpcReq(BaseModel):
+    state: dict = Field(default_factory=dict)
+    action: dict = Field(default_factory=dict)
+    # {"type": "npc_gift", "name": "苏禾", "stones": 30}          赠灵石
+    # {"type": "npc_gift", "name": "苏禾", "item": "凝气丹"}     赠行囊之物
+    # {"type": "npc_talk" | "npc_ask" | "npc_spar", "name": …}   论道 / 打听 / 切磋
+    # {"type": "npc_pact", "name": "苏禾", "pact": "sworn|master|companion"}
+
+
+def _npc_err(code: str, message: str) -> dict:
+    return {"ok": False, "error": {"code": code, "message": message}}
+
+
+def _npc_pass_days(state: dict, days: int) -> None:
+    """主动往来也要花时间——登门、论道、切磋皆非片刻之功。"""
+    state["days"] = _to_int(state.get("days"), 0) + max(0, days)
+    state["age"] = START_AGE + state["days"] // DAYS_PER_YEAR
+
+
+def _npc_close(state: dict, npc: dict, op: str) -> None:
+    """操作落账：记冷却（以「可用轮次」存，剩余轮数 = op_cd[key] - 当前轮）。
+
+    op 带前缀（npc_gift …），冷却表键不带前缀（gift …），须先剥前缀再查。
+    结契（npc_pact）无冷却——一生一次，已由 pact 字段 + 每契一人的 slot 兜底。"""
+    key = op.replace("npc_", "")
+    if key not in NPC_OP_COOLDOWNS:
+        return
+    cd = (npc.get("op_cd") or {}) if isinstance(npc.get("op_cd"), dict) else {}
+    cd[key] = _to_int(state.get("turn"), 0) + NPC_OP_COOLDOWNS[key]
+    npc["op_cd"] = cd
+
+
+def _npc_on_cooldown(state: dict, npc: dict, op: str) -> int:
+    """还剩几轮才能再来一次（0 = 现在就行）。op 带前缀，须剥掉再查 op_cd。"""
+    last = _to_int((npc.get("op_cd") or {}).get(op.replace("npc_", "")), -9999)
+    return max(0, last - _to_int(state.get("turn"), 0))
+
+
+def _npc_bond(npc: dict, delta: int) -> int:
+    """道缘落账（钳制 ±100），返回实际变化。"""
+    old = clamp(_to_int(npc.get("bond"), 0), -100, 100)
+    new = clamp(old + delta, -100, 100)
+    npc["bond"] = new
+    return new - old
+
+
+@app.post("/api/npc")
+def npc_op(req: NpcReq):
+    """江湖往来：赠礼 / 论道 / 打听 / 切磋 / 结契——全部纯代码裁决，不调 AI。
+
+    防刷三重阀门（缺一即破）：
+      ① 收益衰减——礼越送越熟，边际递减（道缘越高，同样一份礼折的点数越少）；
+      ② 轮次冷却——同一人同一操作有冷却（见 NPC_OP_COOLDOWNS），快刷不动；
+      ③ 耗时——每次往来都耗天数（见 NPC_OP_DAYS），寿元是硬通货。
+    """
+    state = sanitize_state(req.state or {})
+    if state.get("dead"):
+        return _npc_err("PLAYER_DEAD", "尘缘已断，此身不能再访故人")
+    action = req.action or {}
+    op = str(action.get("type", "")).strip()
+    if op not in ("npc_gift", "npc_talk", "npc_ask", "npc_spar", "npc_pact"):
+        return _npc_err("UNKNOWN_OP", "未知操作")
+    name = str(action.get("name", "")).strip()[:12]
+    npc = find_npc(state.get("npcs") or [], name)
+    if npc is None:
+        return _npc_err("NPC_UNKNOWN", f"名册中查无「{name}」其人")
+    left = _npc_on_cooldown(state, npc, op)
+    if left > 0:
+        return _npc_err("NPC_COOLDOWN", f"方与{npc['name']}有过往来，{left} 轮后再来")
+    bond = clamp(_to_int(npc.get("bond"), 0), -100, 100)
+    delta_applied = {"hp": 0, "qi": 0, "exp": 0, "spirit_stones": 0,
+                     "items_add": [], "items_remove": []}
+    npc_event = None
+    memory_line = ""
+
+    # ---- 赠礼：灵石或行囊之物 → 道缘（对数衰减，越熟越难讨好）----
+    if op == "npc_gift":
+        if bond < NPC_GIFT_MIN_BOND:
+            return _npc_err("GIFT_REJECTED", f"{npc['name']}与你势同水火，礼下于人也无用")
+        stones = clamp(_to_int(action.get("stones"), 0), 0, 100)
+        item_name = str(action.get("item", "")).strip()[:12]
+        value = 0
+        if stones >= 10 and stones % 10 == 0:
+            if state["spirit_stones"] < stones:
+                return _npc_err("NOT_ENOUGH_STONES", f"灵石不足，需 {stones} 枚")
+            value = stones // NPC_GIFT_STONE_VALUE * 1.0
+            state["spirit_stones"] -= stones
+            delta_applied["spirit_stones"] = -stones
+            gift_text = f"灵石{stones}枚"
+        elif item_name:
+            owned = next((it for it in state["items"] if it["name"] == item_name), None)
+            if not owned or owned.get("qty", 0) < 1:
+                return _npc_err("ITEM_NOT_OWNED", f"行囊中并无「{item_name}」")
+            rarity = str(owned.get("rarity", "下品"))
+            value = NPC_GIFT_ITEM_VALUE.get(rarity, 6) * 1.0
+            owned["qty"] -= 1
+            if owned["qty"] <= 0:
+                state["items"].remove(owned)
+            delta_applied["items_remove"] = [{"name": item_name, "qty": 1}]
+            gift_text = item_name
+        else:
+            return _npc_err("GIFT_EMPTY", "空手登门，礼从何来？（灵石十枚一份，或择行囊之物相赠）")
+        # 边际递减：道缘越深，同样一份礼越不值钱（线性衰落到 1 点保底）。
+        # 道缘 0 时一份礼足值，道缘 90 时只值一成——讨好到生死之交，礼是送不动的。
+        gain = max(1, min(6, round(value * (100 - bond) / 100)))
+        gained = _npc_bond(npc, gain)
+        npc_event = {"name": npc["name"], "delta": gained}
+        narrative = (f"你登门相访，以{gift_text}相赠。{npc['name']}收下了，"
+                     f"彼此又亲近了一层。（道缘 +{gained}）")
+
+    # ---- 论道：友善之人（bond≥30）才肯与你坐而论道 → 修为 ----
+    elif op == "npc_talk":
+        if bond < NPC_TALK_MIN_BOND:
+            return _npc_err("BOND_TOO_LOW", f"{npc['name']}与你不过泛泛，谁肯与你论道")
+        gain = grant_exp(state, int(exp_max_of(state["realm_index"]) * NPC_TALK_EXP_RATIO),
+                         source="npc_talk")
+        state["exp"] = clamp(state["exp"] + gain, 0, exp_max_of(state["realm_index"]))
+        delta_applied["exp"] = gain
+        gained = _npc_bond(npc, 1)
+        npc_event = {"name": npc["name"], "delta": gained}
+        narrative = (f"你与{npc['name']}煮茶论道，各抒所得。一番切磋琢磨，"
+                     f"你于修行一途又有所悟。（修为 +{gain}）")
+
+    # ---- 打听：肯对你说真话的人（bond≥20）→ 推进在册线索，或给出可追的传闻 ----
+    elif op == "npc_ask":
+        if bond < NPC_ASK_MIN_BOND:
+            return _npc_err("BOND_TOO_LOW", f"{npc['name']}与你交情未到，谁肯与你交底")
+        threads = [t for t in (state.get("threads") or []) if not _to_int(t.get("found"), 0)]
+        if threads:
+            th = threads[0]
+            th["last"] = _to_int(state.get("turn"), 0)
+            th["due"] = th["last"] + THREAD_DUE_TURNS
+            th["note"] = f"得{npc['name']}指点，此线仍有可追处"[:THREAD_NOTE_MAX]
+            narrative = (f"你向{npc['name']}探问「{th['title']}」的下落。"
+                          f"{npc['name']}沉吟片刻，为你指了条明路——线索又续了几分生气。")
+        else:
+            key = random.choice(list(TREASURE.keys()))
+            tname = TREASURE[key]["name"]
+            narrative = (f"你与{npc['name']}闲话江湖。{npc['name']}压低声音说起一桩旧闻："
+                         f"有人曾在深山里见过【{tname}】的踪迹，只是真假难辨。")
+            memory_line = f"闻{npc['name']}言，世间或有{tname}"
+
+    # ---- 切磋：点到为止的比试 → 胜则道缘渐深，负则技不如人（bond 再低就是真仇杀）----
+    elif op == "npc_spar":
+        if bond < NPC_SPAR_MIN_BOND:
+            return _npc_err("BOND_TOO_LOW", f"{npc['name']}与你仇深似海，一见面就是生死斗，谈何切磋")
+        rounds = random.randint(3, 12)
+        player_cp = combat_power(state)
+        enemy_cp = player_cp * random.uniform(0.75, 1.15)
+        if enemy_cp < player_cp:
+            gained = _npc_bond(npc, random.randint(2, 6))
+            hp_cost = random.randint(3, 10)
+            gain = grant_exp(state, random.randint(6, 15), source="spar")
+            state["exp"] = clamp(state["exp"] + gain, 0, exp_max_of(state["realm_index"]))
+            delta_applied["hp"] = -hp_cost
+            delta_applied["exp"] = gain
+            npc_event = {"name": npc["name"], "delta": gained}
+            narrative = (f"你与{npc['name']}拆招{rounds}合，点到即止。你略占上风，"
+                         f"{npc['name']}抚掌而笑，引你为可交之人。"
+                         f"（气血 -{hp_cost}，修为 +{gain}，道缘 +{gained}）")
+        else:
+            gained = _npc_bond(npc, -random.randint(2, 4))
+            hp_cost = random.randint(10, 25)
+            delta_applied["hp"] = -hp_cost
+            npc_event = {"name": npc["name"], "delta": gained}
+            narrative = (f"你与{npc['name']}拆招{rounds}合，终是技逊一筹，被抢了先手。"
+                         f"{npc['name']}收势扶你起身，笑说来日方长。"
+                         f"（气血 -{hp_cost}，道缘 {gained}）")
+        state["hp"] = clamp(state["hp"] + delta_applied["hp"], 0, state["hp_max"])
+
+    # ---- 结契（N3）：生死之交（bond≥90）方可结拜 / 师徒 / 道侣 ----
+    elif op == "npc_pact":
+        ptype = str(action.get("pact", "")).strip()
+        if ptype not in PACT_TYPES:
+            return _npc_err("BAD_PACT_TYPE", "结契只有：结拜、师徒、道侣")
+        if bond < NPC_PACT_BOND:
+            return _npc_err("BOND_TOO_LOW",
+                            f"道缘未至生死之交（需 {NPC_PACT_BOND}，现 {bond}），结契无从谈起")
+        if npc.get("pact"):
+            return _npc_err("ALREADY_SWORN", f"你与{npc['name']}已结{PACT_TYPES[npc['pact']['type']]['label']}，不可二心")
+        holder = pact_of(state, ptype)
+        if holder is not None:
+            return _npc_err("PACT_SLOT_TAKEN",
+                            f"你已与{holder['name']}结{PACT_TYPES[ptype]['label']}，不可再结")
+        npc["pact"] = {"type": ptype, "turn": _to_int(state.get("turn"), 0)}
+        spec = PACT_TYPES[ptype]
+        memory_line = f"与{npc['name']}{spec['label']}，自此同途"
+        narrative = (f"你与{npc['name']}焚香告天，{spec['ritual']}——自此结为{spec['label']}，"
+                     f"同参大道，祸福与共。")
+
+    # ---- 公共收尾：冷却 + 耗时 + 近事入册 ----
+    _npc_close(state, npc, op)
+    days = NPC_OP_DAYS[op.replace("npc_", "")]
+    _npc_pass_days(state, days)
+    turn_now = _to_int(state.get("turn"), 0)
+    op_label = {"npc_gift": "登门赠礼", "npc_talk": "煮茶论道", "npc_ask": "探问消息",
+                "npc_spar": "切磋武艺", "npc_pact": "结契立誓"}[op]
+    state["recent"].append({"action": f"与{npc['name']}{op_label}",
+                            "narrative": narrative[:400], "turn": turn_now, "days": days})
+    state["recent"] = state["recent"][-RECENT_KEEP:]
+    if memory_line:
+        state["memory"].append(memory_line[:60])
+        state["memory"] = state["memory"][-20:]
+    dead = False
+    if check_lifespan_death(state):
+        dead = True
+        narrative = narrative + LIFESPAN_DEATH_TEXT
+    return {
+        "ok": True, "state": state, "narrative": narrative,
+        "delta_applied": delta_applied, "npc_event": npc_event,
+        "npc_op": {"op": op, "npc": npc["name"], "days": days},
+        "dead": dead,
+    }
 
 
 def _dead_payload(state: dict) -> dict:

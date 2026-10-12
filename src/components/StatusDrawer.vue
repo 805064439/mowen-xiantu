@@ -81,6 +81,12 @@ function openItem(name: string) {
   game.itemDetail = name;
 }
 
+/* v3.13：点 NPC 打开详情卡（档案 + 往来 + 结契） */
+function openNpc(name: string) {
+  if (game.loading) return;
+  game.npcDetail = name;
+}
+
 function close() { game.statusDrawerOpen = false; }
 
 /* ESC 也能收起：桌面上万一遮罩被内容盖住，键盘仍是保底出口 */
@@ -163,14 +169,16 @@ onBeforeUnmount(() => document.body.classList.remove("no-scroll"));
       </p>
 
       <div class="drawer-npcs" v-if="npcs.length">
-        <div class="dn-title">江 湖 人 物</div>
-        <div v-for="n in npcs" :key="n.name" class="npc-row">
+        <div class="dn-title">江 湖 人 物 <span class="dn-count">{{ npcs.length }}/6</span></div>
+        <button v-for="n in npcs" :key="n.name" type="button" class="npc-row"
+                :title="`${n.title} · ${bondLabel(n.bond)}\n点击查看详情、往来与结契`"
+                @click="openNpc(n.name)">
           <span class="npc-name">{{ n.name }}</span>
           <span class="npc-title">{{ n.title }}</span>
           <span class="npc-track"><i class="npc-fill" :class="{ neg: n.bond < 0 }"
                 :style="{ width: bondPct(n.bond) }"></i></span>
           <span class="npc-bond" :class="{ neg: n.bond < 0 }">{{ bondLabel(n.bond) }}</span>
-        </div>
+        </button>
       </div>
 
       <div class="drawer-stall" v-if="stallShown">

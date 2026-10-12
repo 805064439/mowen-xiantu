@@ -331,6 +331,12 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 }
 #btn-shop:hover{background:var(--gold); color:#f2ecdd; border-color:var(--gold);}
 #btn-shop:disabled{opacity:.4; cursor:default;}
+#btn-map{
+  font-family:inherit; font-size:11.5px; letter-spacing:2px; color:#8a6d3b;
+  background:none; border:1px solid rgba(138,109,59,.5); border-radius:99px; padding:3px 13px; cursor:pointer;
+  transition:all .18s;
+}
+#btn-map:hover{background:#8a6d3b; color:#f2ecdd; border-color:#8a6d3b;}
 #btn-journal{
   font-family:inherit; font-size:11.5px; letter-spacing:2px; color:var(--c-qi);
   background:none; border:1px solid rgba(61,90,114,.45); border-radius:99px; padding:3px 13px; cursor:pointer;
@@ -394,7 +400,13 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 /* ---------- 抽屉 · 江湖人物 ---------- */
 .drawer-npcs{margin-top:12px; padding-top:10px; border-top:1px dashed var(--line);}
 .dn-title{font-size:11px; color:var(--muted); letter-spacing:4px; margin-bottom:6px;}
-.npc-row{display:flex; align-items:center; gap:8px; margin:6px 0;}
+.dn-count{font-size:10px; color:var(--jade); letter-spacing:1px; margin-left:4px;}
+/* npc-row 是按钮（点开详情卡）：重置默认外观，补可点反馈 */
+.npc-row{display:flex; align-items:center; gap:8px; margin:6px 0; width:100%;
+  font-family:inherit; font-size:inherit; text-align:left; background:none; border:none;
+  padding:4px 2px; cursor:pointer; border-radius:6px; transition:background .15s;}
+.npc-row:hover{background:rgba(80,70,50,.08);}
+.npc-row:active{background:rgba(80,70,50,.14);}
 .npc-name{font-size:14px; font-weight:700; color:var(--ink); letter-spacing:1px; flex:none; max-width:88px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .npc-title{font-size:10px; color:var(--jade); border:1px solid rgba(74,107,79,.45);
@@ -468,7 +480,7 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
      只收字距与左右留白。五枚合计约 322px，375px 视口（可用 355px）有余量。 */
   .foot-btns{gap:6px;}
   #ver{letter-spacing:.5px;}
-  #btn-shop,#btn-journal,#btn-savecode,#btn-restart{padding:3px 10px; letter-spacing:1px;}
+  #btn-shop,#btn-journal,#btn-savecode,#btn-restart,#btn-map{padding:3px 10px; letter-spacing:1px;}
   /* 选项行同理：窄屏每一像素都要还给行动句子本身——
      「15px 字号 + 11px 内边距 + 12px 间距」在 390px 上会把
      14 字的行动挤到换行，收紧后同样长度的行动能一行站住。 */
@@ -658,3 +670,82 @@ body.no-scroll{overflow:hidden;}
 .item-chip.usable{color:var(--seal); border-color:rgba(166,58,43,.3);}
 .item-chip.usable:hover{background:rgba(166,58,43,.08); border-color:var(--seal);}
 .items-tip{font-size:10.5px; color:var(--muted); letter-spacing:1px; width:100%;}
+
+/* ---------- 舆图（v3.13 · M1） ---------- */
+#map{position:fixed; inset:0; z-index:99; display:grid; place-items:center;
+  background:rgba(30,26,20,.55); padding:16px; animation:fadeIn .25s both;}
+.map-card{width:min(360px, 94vw); max-height:88vh; overflow-y:auto; padding:18px 18px 14px;}
+.map-cur-inline{color:var(--gold); font-weight:700;}
+.map-sheet{position:relative; width:100%; aspect-ratio:4/5; overflow:hidden;
+  border:1px solid var(--line2); border-radius:10px;
+  background:linear-gradient(180deg,#f4eedd 0%, #ece3cc 60%, #e6dcc2 100%);}
+.map-bg{position:absolute; inset:0; width:100%; height:100%; opacity:.5;}
+.map-ridge{fill:none; stroke:#9a8c6c; stroke-width:.9; stroke-linecap:round;}
+.map-ridge2{stroke:#b3a684; stroke-width:.6;}
+.map-river{fill:none; stroke:#8fa3ad; stroke-width:.7; stroke-linecap:round; opacity:.7;}
+.map-river2{stroke:#a5b8c0; stroke-width:.5;}
+.map-road{fill:none; stroke:#c2a97a; stroke-width:.5; stroke-dasharray:2.2 1.6; opacity:.85;}
+.place-dot{position:absolute; transform:translate(-50%,-50%);
+  display:flex; flex-direction:column; align-items:center; gap:1px;
+  background:none; border:none; cursor:pointer; font-family:inherit; padding:2px;}
+.place-dot::before{content:""; width:9px; height:9px; border-radius:50%;
+  background:var(--ink-soft); border:1.5px solid var(--paper2);
+  box-shadow:0 1px 4px rgba(30,26,20,.35);}
+.place-dot.here::before{background:var(--seal); width:12px; height:12px;
+  box-shadow:0 0 0 4px rgba(166,58,43,.18);}
+.place-dot.place-danger::before{background:#7a4a2f;}
+.place-dot.place-secret::before{background:#6a5aa0;}
+.place-dot.place-city::before{background:#a06a20;}
+.place-dot.place-port::before{background:#3f6a7d;}
+.place-name{font-size:11px; color:var(--ink); letter-spacing:1px; text-shadow:0 1px 0 #fff;}
+.place-kind{font-size:8.5px; color:var(--muted); letter-spacing:1px;}
+.map-legend{list-style:none; margin:10px 0 0; padding:0; text-align:left;}
+.map-legend li{display:flex; align-items:baseline; gap:8px; padding:5px 2px;
+  border-bottom:1px dashed var(--line); font-size:12px;}
+.map-legend li:last-child{border-bottom:none;}
+.map-legend li.here{background:rgba(166,58,43,.06); border-radius:6px;}
+.lg-name{font-weight:700; color:var(--ink); letter-spacing:1px; flex:none; min-width:44px;}
+.lg-kind{font-size:9.5px; color:var(--muted); letter-spacing:1px; flex:none; width:30px;}
+.lg-kind.place-danger{color:#7a4a2f;}
+.lg-kind.place-secret{color:#6a5aa0;}
+.lg-kind.place-city{color:#a06a20;}
+.lg-kind.place-port{color:#3f6a7d;}
+.lg-desc{color:var(--ink-soft); flex:1; font-size:11px; letter-spacing:.3px;}
+
+/* ---------- 江湖人物详情卡（v3.13 · N1/N2/N3） ---------- */
+#npc-detail{position:fixed; inset:0; z-index:100; display:grid; place-items:center;
+  background:rgba(30,26,20,.55); padding:18px; animation:fadeIn .22s both;}
+.nd-card{width:min(340px, 94vw); max-height:86vh; overflow-y:auto; padding:20px 20px 16px;}
+.nd-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; justify-content:center;}
+.nd-head h3{font-size:20px; letter-spacing:6px; margin:0;}
+.nd-title{font-size:11px; color:var(--jade); border:1px solid rgba(74,107,79,.45);
+  padding:0 8px; border-radius:99px; letter-spacing:1px;}
+.nd-pact{font-size:11px; color:var(--gold); border:1px solid rgba(154,123,45,.55);
+  padding:0 8px; border-radius:99px; letter-spacing:1px; cursor:help;}
+.nd-bond-row{display:flex; align-items:center; gap:10px; margin-top:12px;}
+.nd-bond-label{font-size:13px; font-weight:700; color:var(--ink); letter-spacing:2px; flex:none; min-width:56px; text-align:left;}
+.nd-track{flex:1; height:7px; background:#e4ddc8; border-radius:99px; overflow:hidden;}
+.nd-fill{display:block; height:100%; border-radius:99px;
+  background:linear-gradient(90deg,#3c5a43,var(--jade)); transition:width .6s cubic-bezier(.2,.8,.3,1);}
+.nd-fill.neg{background:linear-gradient(90deg,#7a2f24,#a44a3a);}
+.nd-bond-val{font-size:13px; font-weight:700; color:var(--jade); flex:none; width:34px; text-align:right; font-variant-numeric:tabular-nums;}
+.nd-bond-val.neg{color:var(--seal);}
+.nd-met{font-size:11px; color:var(--muted); margin-top:4px;}
+.nd-pact-note{margin-top:8px; padding:7px 10px; border-radius:8px;
+  background:rgba(154,123,45,.09); border:1px solid rgba(154,123,45,.28);
+  color:var(--gold); font-size:12px; letter-spacing:1px;}
+.nd-sec{font-size:11px; color:var(--muted); letter-spacing:4px; margin:14px 0 6px;
+  text-align:left; display:flex; align-items:baseline; gap:8px;}
+.nd-sec-sub{font-size:10px; color:var(--gold); letter-spacing:1px;}
+.nd-mem-line{font-size:12px; color:var(--ink-soft); line-height:1.7; letter-spacing:.3px;
+  text-align:left; padding-left:9px; border-left:2px solid var(--line2); margin:5px 0;}
+.nd-ops{display:flex; flex-wrap:wrap; gap:8px; justify-content:center;}
+.nd-op{font-family:inherit; font-size:13px; letter-spacing:2px; padding:7px 14px; border-radius:8px;
+  cursor:pointer; border:1px solid var(--line2); background:none; color:var(--ink-soft); transition:all .18s;}
+.nd-op:not(:disabled):hover{background:var(--ink); color:#f2ecdd; border-color:var(--ink);}
+.nd-op:disabled{opacity:.45; cursor:not-allowed;}
+.nd-op small{margin-left:4px; font-size:10px; color:var(--seal); letter-spacing:0;}
+.nd-op.pact{border-color:rgba(166,58,43,.5); color:var(--seal);}
+.nd-op.pact:not(:disabled):hover{background:var(--seal); color:#f5efe0; border-color:var(--seal);}
+.nd-cd-tip{font-size:10.5px; color:var(--muted); letter-spacing:.5px; margin-top:6px;}
+.nd-locked{font-size:11px; color:var(--muted); letter-spacing:.5px;}

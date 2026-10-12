@@ -18,6 +18,8 @@ import SaveCodeModal from "./components/SaveCodeModal.vue";
 import JournalModal from "./components/JournalModal.vue";
 import ShopModal from "./components/ShopModal.vue";
 import ItemDetail from "./components/ItemDetail.vue";
+import MapModal from "./components/MapModal.vue";
+import NpcDetail from "./components/NpcDetail.vue";
 
 const realm = computed(() => REALMS[game.state?.realm_index ?? 0]);
 const isHeavenRoot = computed(() => (game.state?.spirit_root || "").startsWith("天灵根"));
@@ -58,6 +60,7 @@ onMounted(() => { actions.init(); });
       <span>点击剧情文字可跳过打字</span>
       <span class="foot-btns">
         <span id="ver" :title="game.buildInfo || '版本号：当前构建的代码版本'">v{{ VERSION }}</span>
+        <button id="btn-map" type="button" @click="game.mapOpen = true">舆图</button>
         <button id="btn-shop" type="button" @click="game.shopOpen = true">坊市</button>
         <button id="btn-journal" type="button" @click="game.journalOpen = true">对局日志</button>
         <button id="btn-savecode" type="button" @click="game.saveCodeOpen = true">仙缘令</button>
@@ -76,5 +79,7 @@ onMounted(() => { actions.init(); });
   <SaveCodeModal v-if="game.saveCodeOpen" />
   <JournalModal v-if="game.journalOpen" />
   <ShopModal v-if="game.shopOpen" />
+  <MapModal v-if="game.mapOpen" />
+  <NpcDetail v-if="game.npcDetail" :name="game.npcDetail" />
   <ItemDetail v-if="game.itemDetail" />
 </template>

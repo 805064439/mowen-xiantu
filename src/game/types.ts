@@ -55,6 +55,7 @@ export interface GameState {
   rest_count?: number;       // 累计静养轮数
   seclusion_streak?: number; // 枯坐轮数（仅 cultivate 累加，出门/静养即断）
   dead?: boolean;            // 已寿终
+  location?: string;         // 当前所在（白名单地点键，v3.13 舆图）
   /* ---- 机缘物件（v3 · 探索所得）---- */
   treasures?: Record<string, number>;  // {"residual_scroll": 3, "guard_talisman": 1, ...}
   eff_bonus?: number;                  // 闭关效率加成（由 treasures 派生）
@@ -89,6 +90,8 @@ export interface NpcEntry {
   met_turn?: number;
   fired?: Record<string, number>;  // 已触发过的事件 → 轮次（gift/teach/vendetta，同类一生一次）
   alias?: string[];                // 曾用名（AI 走样的写法），供后端认人，前端不展示
+  pact?: { type: string; turn?: number };  // 结契（v3.13：sworn 结拜 / master 师徒 / companion 道侣）
+  op_cd?: Record<string, number>;  // 玩家主动操作的冷却（可用轮次，v3.13 /api/npc）
 }
 
 /** 天机事件：由道缘阈值触发，下一轮结算 */
@@ -142,6 +145,7 @@ export interface CultivateInfo {
   eff?: number;          // 机缘效率乘数（1.0 = 无加成）
   eff_bonus?: number;    // 机缘效率加成（功法/秘籍/真诀 + 灵丹 buff）
   elixir_buff?: number;  // 灵丹 buff 剩余轮数（0 = 未服丹）
+  pact?: number;         // v3.13 师徒结契效率乘数（1.0 = 无契，见 PACT_MASTER_EFF_MULT）
   span?: string;         // 本轮修行粒度（short/medium/long）
   short?: boolean;       // v3.1 兼容：本轮是否为「片刻行功」（只过了一两天，不是五年）
   tier?: string;         // 探索档位（low/mid/high，仅 explore）
@@ -217,7 +221,8 @@ export interface NpcEvent {
 }
 
 export interface GameAction {
-  type: "choice" | "breakthrough" | "custom" | "use_item" | "use_elixir" | "shop_buy" | "shop_sell";
+  type: "choice" | "breakthrough" | "custom" | "use_item" | "use_elixir" | "shop_buy" | "shop_sell"
+    | "npc_gift" | "npc_talk" | "npc_ask" | "npc_spar" | "npc_pact";
   id?: string;
   text?: string;
   name?: string;
@@ -226,6 +231,9 @@ export interface GameAction {
   risk?: Risk;   // 风险档（explore 时即探索档位：low/mid/high）
   short?: boolean;  // v3.1 兼容：片刻行功标记（周天/小坐）：不传则后端一次吃五年
   span?: string;    // 修行粒度（short|medium|long）：不传则后端按整段闭关算
+  stones?: number;  // v3.13 NPC 赠礼：灵石数量（10 的倍数）
+  item?: string;    // v3.13 NPC 赠礼：行囊之物名
+  pact?: string;    // v3.13 NPC 结契：sworn|master|companion
 }
 
 /** 叙事区的一个段落（一段剧情） */

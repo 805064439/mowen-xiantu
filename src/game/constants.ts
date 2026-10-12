@@ -2,7 +2,7 @@
 
 /* 版本号：与后端 server.py 的 VERSION 同源，页脚显示它。
    改一边就要改另一边 —— tests/frontend/constants.spec.ts 会比对两边。 */
-export const VERSION = "3.12.5";
+export const VERSION = "3.13.0";
 
 export const REALMS = [
   "炼气一层", "炼气二层", "炼气三层", "炼气四层", "炼气五层",
@@ -10,6 +10,37 @@ export const REALMS = [
 ];
 
 export const EXP_MAX = [135, 176, 230, 351, 446, 540, 783, 918, 1080, 9999];
+
+/* -----------------------------------------------------------------------
+   舆图（v3.13 · M1）：与后端 server.py 的 LOCATIONS 同源。
+   地名是本项目高压线——AI 只能在这张表里「申报」移动，编地名直接丢弃。
+   前端这份只用于舆图渲染（坐标 + 简介），key 必须与后端完全一致。
+   ----------------------------------------------------------------------- */
+export interface PlaceInfo {
+  key: string;
+  name: string;
+  kind: string;      // 山门 / 城镇 / 渡口 / 险地 / 秘境 / 大城
+  desc: string;
+  x: number;         // 舆图坐标（百分比，0~100）
+  y: number;
+}
+
+export const PLACES: PlaceInfo[] = [
+  { key: "qingniu_shan",   name: "青牛山",   kind: "山门", desc: "主角栖身的破落山门，灵脉稀薄，人迹罕至", x: 46, y: 74 },
+  { key: "qingniu_zhen",   name: "青牛镇",   kind: "城镇", desc: "山下小镇，坊市商贾云集，三教九流混杂", x: 52, y: 86 },
+  { key: "qingfeng_du",    name: "青枫渡",   kind: "渡口", desc: "官道要津，南来北往的消息都在此集散", x: 70, y: 62 },
+  { key: "wushan_zhen",    name: "乌山镇",   kind: "城镇", desc: "西陲矿镇，散修与镖客讨生活的地方", x: 16, y: 50 },
+  { key: "yueling",        name: "越岭",     kind: "险地", desc: "绵延数百里的深山老林，妖兽盘踞", x: 30, y: 26 },
+  { key: "heifeng_zhai",   name: "黑风寨",   kind: "险地", desc: "恶名昭彰的匪寨，寨中修士打家劫舍", x: 60, y: 16 },
+  { key: "beihuang_ze",    name: "北荒泽",   kind: "秘境", desc: "大泽万里，传闻有上古灵脉与凶兽同眠", x: 82, y: 34 },
+  { key: "wangxian_cheng", name: "望仙城",   kind: "大城", desc: "方圆千里第一雄城，宗门驻跸，规矩森严", x: 88, y: 74 },
+];
+
+export const DEFAULT_PLACE_KEY = "qingniu_shan";
+
+export function placeOf(key?: string): PlaceInfo {
+  return PLACES.find(p => p.key === key) ?? PLACES.find(p => p.key === DEFAULT_PLACE_KEY)!;
+}
 
 export const INIT_STATE = {
   realm_index: 0, hp: 100, hp_max: 100, qi: 50, qi_max: 50,

@@ -71,6 +71,6 @@ describe("页脚按钮：每个都得有配套样式", () => {
     expect(narrow, "没找到窄屏媒体查询块").not.toBe("");
     expect(narrow, "窄屏没为按钮组收间距").toMatch(/\.foot-btns\{[^}]*gap:6px/);
     expect(narrow, "窄屏没为页脚按钮收留白/字距")
-      .toMatch(/#btn-shop,#btn-journal,#btn-savecode,#btn-restart\{[^}]*letter-spacing:1px/);
+      .toMatch(/#btn-shop,#btn-journal,#btn-savecode,#btn-restart,#btn-map\{[^}]*letter-spacing:1px/);
   });
 });

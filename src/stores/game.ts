@@ -38,6 +38,8 @@ export const game = reactive({
   saveCodeOpen: false,       // 仙缘令弹窗（存档导入导出）
   journalOpen: false,        // 对局日志弹窗（每轮剧情/选项导出）
   shopOpen: false,           // 坊市弹窗（固定价格买卖）
+  mapOpen: false,            // 舆图弹窗（v3.13：白名单地点水墨图）
+  npcDetail: null as string | null,  // NPC 详情卡（人名；null = 关闭，v3.13）
   itemDetail: null as string | null,  // 道具详情弹窗（物品名；null = 关闭）
   buildInfo: "",                      // 后端自述（版本/commit/模式），页脚版本号的悬停说明
 });
@@ -458,6 +460,34 @@ async function shopAct(action: GameAction) {
   }
 }
 
+/* ---------------- 江湖往来（v3.13 · /api/npc，纯后端裁决） ---------------- */
+async function npcAct(action: GameAction) {
+  if (!game.state || game.loading) return;
+  game.loading = true;
+  try {
+    const res = await fetch(`${API}/npc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: game.state, action }),
+    });
+    const d = await res.json();
+    if (!d.ok) {
+      floatText(d?.error?.message || "此去不遂，人未得见", "f-neg");
+      return;
+    }
+    game.state = d.state;
+    save();
+    floatDeltas(d.delta_applied);
+    if (d.npc_event) floatNpcEvents([d.npc_event]);
+    floatText(d.narrative, "f-item");
+    // 结契 / 赠礼等会改变道缘与名册，详情卡读的也是同一份 state，热更新即可
+  } catch {
+    floatText("山长水远，未能成行（网络异常）", "f-neg");
+  } finally {
+    game.loading = false;
+  }
+}
+
 /* ---------------- 对局日志（每轮剧情/选项，导出排查用） ---------------- */
 function journalCount(): number { return loadJournal().length; }
 function journalExport(fmt: JournalFormat): Exported | null { return exportJournalAs(fmt); }
@@ -465,7 +495,7 @@ function journalClear(): void { clearJournal(); }
 
 export const actions = {
   act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText,
-  exportSaveCode, importSaveCode, shopAct,
+  exportSaveCode, importSaveCode, shopAct, npcAct,
   journalCount, journalExport, journalClear,
 };
 
