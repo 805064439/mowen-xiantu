@@ -92,6 +92,7 @@ export interface NpcEntry {
   alias?: string[];                // 曾用名（AI 走样的写法），供后端认人，前端不展示
   pact?: { type: string; turn?: number };  // 结契（v3.13：sworn 结拜 / master 师徒 / companion 道侣）
   op_cd?: Record<string, number>;  // 玩家主动操作的冷却（可用轮次，v3.13 /api/npc）
+  location?: string;               // 现居地（白名单地点键，v3.13.1 舆图「可访故人」；"" = 不知其所）
 }
 
 /** 天机事件：由道缘阈值触发，下一轮结算 */

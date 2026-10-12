@@ -12,7 +12,7 @@ import pytest
 
 from server import (
     LOCATIONS, DEFAULT_LOCATION,
-    location_key_of, apply_location_update,
+    location_key_of, apply_location_update, npc_location_key, apply_npc_updates,
     pact_of, NPC_PACT_BOND, PACT_TYPES,
 )
 
@@ -65,6 +65,63 @@ class TestLocationWhitelist:
             "qingniu_shan", "qingniu_zhen", "qingfeng_du", "wushan_zhen",
             "yueling", "heifeng_zhai", "beihuang_ze", "wangxian_cheng",
         }
+
+    def test_every_place_has_flavor_and_fauna(self):
+        # v3.13.1：舆图点开要看「风土人情 + 出没妖兽」，两栏必须齐全
+        for k, v in LOCATIONS.items():
+            assert v.get("flavor"), f"{k} 缺 flavor（风土人情）"
+            assert isinstance(v.get("fauna"), list) and v["fauna"], f"{k} 缺 fauna（出没妖兽）"
+
+
+# ---------------------------------------------------------------- v3.13.1 NPC 现居地（可访故人）
+
+
+class TestNpcLocation:
+    def test_npc_location_key_maps_name_and_key(self):
+        assert npc_location_key("乌山镇") == "wushan_zhen"
+        assert npc_location_key("wushan_zhen") == "wushan_zhen"
+        assert npc_location_key("去越岭") == "yueling"
+
+    def test_npc_location_key_rejects_unknown(self):
+        assert npc_location_key("海外仙山") == ""
+        assert npc_location_key("") == ""
+        assert npc_location_key(None) == ""
+
+    def test_sanitize_keeps_npc_location(self, engine):
+        s = engine.sanitize_state({
+            "npcs": [{"name": "苏禾", "title": "采药人", "bond": 40, "location": "wushan_zhen"}],
+        })
+        assert s["npcs"][0]["location"] == "wushan_zhen"
+
+    def test_sanitize_drops_fabricated_npc_location(self, engine):
+        s = engine.sanitize_state({
+            "npcs": [{"name": "苏禾", "title": "采药人", "bond": 40, "location": "蓬莱仙山"}],
+        })
+        assert s["npcs"][0]["location"] == ""
+
+    def test_apply_npc_updates_records_location(self, engine):
+        s = engine.sanitize_state({
+            "turn": 10,
+            "npcs": [{"name": "苏禾", "title": "采药人", "bond": 40, "met_turn": 5}],
+        })
+        apply_npc_updates(s, {"npc_updates": [{"name": "苏禾", "title": "采药人", "delta": 0, "location": "乌山镇"}]})
+        assert s["npcs"][0]["location"] == "wushan_zhen"
+
+    def test_apply_npc_updates_ignores_fabricated_location(self, engine):
+        s = engine.sanitize_state({
+            "turn": 10,
+            "npcs": [{"name": "苏禾", "title": "采药人", "bond": 40, "met_turn": 5}],
+        })
+        apply_npc_updates(s, {"npc_updates": [{"name": "苏禾", "title": "采药人", "delta": 0, "location": "海外仙山"}]})
+        assert s["npcs"][0]["location"] == ""
+
+    def test_apply_npc_updates_omits_location_when_absent(self, engine):
+        s = engine.sanitize_state({
+            "turn": 10,
+            "npcs": [{"name": "苏禾", "title": "采药人", "bond": 40, "met_turn": 5}],
+        })
+        apply_npc_updates(s, {"npc_updates": [{"name": "苏禾", "title": "采药人", "delta": 3}]})
+        assert s["npcs"][0]["location"] == ""
 
 
 # ---------------------------------------------------------------- N2 /api/npc

@@ -1,13 +1,29 @@
 <script setup lang="ts">
-/* 舆图（v3.13 · M1）：白名单地点水墨图。
-   纯展示——当前位置高亮，点地点看简介。移动仍走叙事（AI 申报 + 代码白名单裁决），
-   这里不给「瞬移」按钮，避免绕过耗时与风险。 */
-import { computed } from "vue";
+/* 舆图（v3.13 · M1 + v3.13.1 · M2前半）：白名单地点水墨图。
+   纯展示——当前位置高亮，点地点看「风土人情 + 出没妖兽 + 可访故人」。
+   移动仍走叙事（AI 申报 + 代码白名单裁决），这里不给「瞬移」按钮，避免绕过耗时与风险。 */
+import { computed, ref } from "vue";
 import { game } from "../stores/game";
 import { PLACES, placeOf } from "../game/constants";
+import type { NpcEntry } from "../game/types";
 
 const cur = computed(() => game.state?.location || "");
 const curPlace = computed(() => placeOf(cur.value));
+
+/* 当前选中查看的地点（默认 = 脚下） */
+const selected = ref(cur.value || "qingniu_shan");
+const selPlace = computed(() => placeOf(selected.value));
+
+/* 此地的故人：名册里现居/常驻在此的相识人物 */
+const residents = computed<NpcEntry[]>(() =>
+  (game.state?.npcs || []).filter(n => n.location && n.location === selected.value),
+);
+
+function pick(key: string) { selected.value = key; }
+function visit(n: NpcEntry) {
+  game.mapOpen = false;        // 收起舆图，让详情卡独占
+  game.npcDetail = n.name;
+}
 
 function kindTone(kind: string): string {
   switch (kind) {
@@ -42,23 +58,39 @@ function kindTone(kind: string): string {
           :key="p.key"
           type="button"
           class="place-dot"
-          :class="[kindTone(p.kind), { here: p.key === cur }]"
+          :class="[kindTone(p.kind), { here: p.key === cur, sel: p.key === selected }]"
           :style="{ left: p.x + '%', top: p.y + '%' }"
-          :title="`${p.name} · ${p.kind}\n${p.desc}`"
-          @click.stop=""
+          :title="`${p.name} · ${p.kind}`"
+          @click.stop="pick(p.key)"
         >
           <span class="place-name">{{ p.name }}</span>
           <span class="place-kind">{{ p.kind }}</span>
         </button>
       </div>
 
-      <ul class="map-legend">
-        <li v-for="p in PLACES" :key="p.key" :class="{ here: p.key === cur }">
-          <span class="lg-name">{{ p.name }}</span>
-          <span class="lg-kind" :class="kindTone(p.kind)">{{ p.kind }}</span>
-          <span class="lg-desc">{{ p.desc }}</span>
-        </li>
-      </ul>
+      <!-- v3.13.1：点地点看风土人情 / 出没妖兽 / 可访故人 -->
+      <div class="map-detail">
+        <div class="md-head">
+          <span class="md-name">{{ selPlace.name }}</span>
+          <span class="md-kind" :class="kindTone(selPlace.kind)">{{ selPlace.kind }}</span>
+        </div>
+        <p class="md-desc">{{ selPlace.desc }}</p>
+        <p class="md-flavor">{{ selPlace.flavor }}</p>
+
+        <div class="md-sec">出 没</div>
+        <div class="md-fauna">
+          <span v-for="f in selPlace.fauna" :key="f" class="md-chip">{{ f }}</span>
+        </div>
+
+        <div class="md-sec">故 人</div>
+        <div v-if="residents.length" class="md-residents">
+          <button v-for="n in residents" :key="n.name" type="button" class="md-res" @click="visit(n)">
+            <span class="md-res-name">{{ n.name }}</span>
+            <span class="md-res-title">{{ n.title }}</span>
+          </button>
+        </div>
+        <p v-else class="md-empty">此间暂无你相识之人。</p>
+      </div>
 
       <div class="sc-actions">
         <button type="button" class="sc-btn sc-close-btn" @click="game.mapOpen = false">合 卷</button>

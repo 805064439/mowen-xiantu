@@ -2,7 +2,7 @@
 
 /* 版本号：与后端 server.py 的 VERSION 同源，页脚显示它。
    改一边就要改另一边 —— tests/frontend/constants.spec.ts 会比对两边。 */
-export const VERSION = "3.13.0";
+export const VERSION = "3.13.1";
 
 export const REALMS = [
   "炼气一层", "炼气二层", "炼气三层", "炼气四层", "炼气五层",
@@ -21,19 +21,37 @@ export interface PlaceInfo {
   name: string;
   kind: string;      // 山门 / 城镇 / 渡口 / 险地 / 秘境 / 大城
   desc: string;
+  flavor: string;    // 风土人情（v3.13.1：点开看的一笔，纯文案，不碰数值）
+  fauna: string[];   // 出没妖兽/人祸（v3.13.1：名字与后端 ENEMY_DATA 一致，仅展示）
   x: number;         // 舆图坐标（百分比，0~100）
   y: number;
 }
 
 export const PLACES: PlaceInfo[] = [
-  { key: "qingniu_shan",   name: "青牛山",   kind: "山门", desc: "主角栖身的破落山门，灵脉稀薄，人迹罕至", x: 46, y: 74 },
-  { key: "qingniu_zhen",   name: "青牛镇",   kind: "城镇", desc: "山下小镇，坊市商贾云集，三教九流混杂", x: 52, y: 86 },
-  { key: "qingfeng_du",    name: "青枫渡",   kind: "渡口", desc: "官道要津，南来北往的消息都在此集散", x: 70, y: 62 },
-  { key: "wushan_zhen",    name: "乌山镇",   kind: "城镇", desc: "西陲矿镇，散修与镖客讨生活的地方", x: 16, y: 50 },
-  { key: "yueling",        name: "越岭",     kind: "险地", desc: "绵延数百里的深山老林，妖兽盘踞", x: 30, y: 26 },
-  { key: "heifeng_zhai",   name: "黑风寨",   kind: "险地", desc: "恶名昭彰的匪寨，寨中修士打家劫舍", x: 60, y: 16 },
-  { key: "beihuang_ze",    name: "北荒泽",   kind: "秘境", desc: "大泽万里，传闻有上古灵脉与凶兽同眠", x: 82, y: 34 },
-  { key: "wangxian_cheng", name: "望仙城",   kind: "大城", desc: "方圆千里第一雄城，宗门驻跸，规矩森严", x: 88, y: 74 },
+  { key: "qingniu_shan",   name: "青牛山",   kind: "山门", desc: "主角栖身的破落山门，灵脉稀薄，人迹罕至",
+    flavor: "破庙孤悬半山，门前松涛入耳，夜半常有兽鸣——你在此枯守三载，闭着眼也认得出每一级石阶。",
+    fauna: ["山野妖鼠"], x: 46, y: 74 },
+  { key: "qingniu_zhen",   name: "青牛镇",   kind: "城镇", desc: "山下小镇，坊市商贾云集，三教九流混杂",
+    flavor: "逢墟日人头攒动，坊市叫卖声能传三里；客栈酒楼里，说书人正讲着北荒泽的旧闻。",
+    fauna: ["流寇斥候", "疯道散修"], x: 52, y: 86 },
+  { key: "qingfeng_du",    name: "青枫渡",   kind: "渡口", desc: "官道要津，南来北往的消息都在此集散",
+    flavor: "渡口舟楫如梭，南北客商与官府差役在此打尖换船，人来人往，消息最是灵通。",
+    fauna: ["流寇斥候", "劫道散修"], x: 70, y: 62 },
+  { key: "wushan_zhen",    name: "乌山镇",   kind: "城镇", desc: "西陲矿镇，散修与镖客讨生活的地方",
+    flavor: "矿洞满山，汉子们满面煤灰；散修与镖客在此讨一口饭吃，赌坊当铺彻夜不熄灯。",
+    fauna: ["劫道散修", "疯道散修"], x: 16, y: 50 },
+  { key: "yueling",        name: "越岭",     kind: "险地", desc: "绵延数百里的深山老林，妖兽盘踞",
+    flavor: "古木参天、雾锁深林，一条羊肠小径没入兽道；猎户都不敢深入，说山里住着成了精的东西。",
+    fauna: ["黑风寨修士", "幻面狐妖", "山魈", "枯尸道人"], x: 30, y: 26 },
+  { key: "heifeng_zhai",   name: "黑风寨",   kind: "险地", desc: "恶名昭彰的匪寨，寨中修士打家劫舍",
+    flavor: "半山腰间一座石寨，寨墙上的火把昼夜不熄；过往商队提起此地无不色变。",
+    fauna: ["黑风寨修士", "劫道散修"], x: 60, y: 16 },
+  { key: "beihuang_ze",    name: "北荒泽",   kind: "秘境", desc: "大泽万里，传闻有上古灵脉与凶兽同眠",
+    flavor: "万里泽国，白雾茫茫，芦苇荡里时有异光冲天；传闻上古灵脉与凶兽同眠于此。",
+    fauna: ["泽地铁甲蜥", "幻面狐妖", "碧磷老怪", "邪修长老"], x: 82, y: 34 },
+  { key: "wangxian_cheng", name: "望仙城",   kind: "大城", desc: "方圆千里第一雄城，宗门驻跸，规矩森严",
+    flavor: "城墙高逾数丈，宗门执事持符巡街，规矩森严；可暗巷里的勾当，从来不止一处。",
+    fauna: ["邪修长老"], x: 88, y: 74 },
 ];
 
 export const DEFAULT_PLACE_KEY = "qingniu_shan";

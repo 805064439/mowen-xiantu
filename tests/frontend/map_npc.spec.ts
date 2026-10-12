@@ -41,6 +41,21 @@ describe("舆图（M1）", () => {
     expect(mapSrc).not.toContain("npcAct");
     expect(mapSrc).not.toContain("shopAct");
   });
+
+  it("每个地点都有 flavor 与 fauna（v3.13.1 点开看风土人情/出没妖兽）", () => {
+    const placesBlock = constSrc.match(/export const PLACES[^=]*=\s*\[([\s\S]*?)\n\];/);
+    if (!placesBlock) throw new Error("constants.ts 未找到 PLACES");
+    const entries = placesBlock[1].match(/\{ key:/g) || [];
+    expect(entries).toHaveLength(8);
+    expect((placesBlock[1].match(/flavor:/g) || []).length).toBe(8);
+    expect((placesBlock[1].match(/fauna:/g) || []).length).toBe(8);
+  });
+
+  it("点地点看风土人情 / 出没妖兽 / 可访故人三块（M2 前半）", () => {
+    expect(mapSrc).toContain("md-flavor");
+    expect(mapSrc).toContain("md-fauna");
+    expect(mapSrc).toContain("md-residents");
+  });
 });
 
 describe("NPC 详情卡（N1/N2/N3）", () => {
@@ -65,10 +80,11 @@ describe("NPC 详情卡（N1/N2/N3）", () => {
     expect(npcSrc).toContain("90");
   });
 
-  it("NpcEntry 类型对齐后端 sanitize（pact + op_cd）", () => {
+  it("NpcEntry 类型对齐后端 sanitize（pact + op_cd + location）", () => {
     const iface = typesSrc.match(/interface NpcEntry\s*\{([\s\S]*?)\n\}/);
     expect(iface?.[1]).toContain("pact");
     expect(iface?.[1]).toContain("op_cd");
+    expect(iface?.[1]).toContain("location");   // v3.13.1：现居地（可访故人）
   });
 
   it("GameState 有 location 字段（舆图当前位置）", () => {
