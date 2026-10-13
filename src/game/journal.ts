@@ -80,6 +80,12 @@ export function clearJournal(): void {
   try { localStorage.removeItem(JOURNAL_KEY); } catch (e) { /* 忽略 */ }
 }
 
+/** 彻底清档：连批次号一起清（clearJournal 只清日志本体，批次号留给跨轮回对比） */
+export function wipeJournal(): void {
+  clearJournal();
+  try { localStorage.removeItem(SID_KEY); } catch (e) { /* 忽略 */ }
+}
+
 /** 体积超限就从头丢，直到装得下（至少保留最近 20 轮） */
 function byteLen(list: JournalList): number {
   try { return JSON.stringify(list).length; } catch (e) { return 0; }

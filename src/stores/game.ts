@@ -7,10 +7,11 @@ import { REALMS, OPENING, INIT_CHOICES, coeffLabel, daysText, VERSION } from "..
 import {
   readSave, writeSave, removeSave, freshState, SAVE_KEY,
   loadReincarnations, saveReincarnations, loadCycleCount, bumpCycleCount,
+  wipeAllStorage,
   encodeSaveCode, decodeSaveCode,
 } from "../game/storage";
 import {
-  loadJournal, clearJournal, exportJournalAs, rotateSession, appendTurn,
+  loadJournal, clearJournal, exportJournalAs, rotateSession, appendTurn, wipeJournal,
   type JournalFormat, type Exported,
 } from "../game/journal";
 
@@ -34,6 +35,7 @@ export const game = reactive({
   mockMode: false,
   confirmOpen: false,
   confirmText: "",
+  confirmWipe: false,             // 彻底清档二步确认（true = 已点过一次「清空一切」，再确认才真删）
   statusDrawerOpen: false,   // 全状态抽屉（点吸顶迷你条唤起）
   saveCodeOpen: false,       // 仙缘令弹窗（存档导入导出）
   journalOpen: false,        // 对局日志弹窗（每轮剧情/选项导出）
@@ -397,6 +399,28 @@ function confirmRestart() {
   newGame(true);
 }
 
+/* ---------------- 彻底清档（v3.13.2）----------------
+   与「再入轮回」的区别：那个留江湖记忆（名册/世数/日志），这个一切归零——
+   当前进度、轮回名册、世数、输入历史、对局日志全部抹掉，重开天地。
+   不可恢复，所以 UI 上是二步确认；requestRestart 的文案世数也一并归零，
+   下次点「再入轮回」会回到「重开将抹去今生……」的初始文案。 */
+function requestWipe() {
+  game.confirmWipe = true;
+}
+
+function cancelWipe() {
+  game.confirmWipe = false;
+}
+
+function wipeAll() {
+  game.confirmOpen = false;
+  game.confirmWipe = false;
+  wipeAllStorage();    // 存档 / 轮回名册 / 世数 / 自由输入历史
+  wipeJournal();       // 对局日志 + 批次号
+  newGame(true);       // 重开天地：全新一世，名册与世数都从零起算
+  floatText("前尘尽扫，重开天地", "f-item");
+}
+
 /* ---------------- 仙缘令（存档码） ---------------- */
 /** 打开弹窗时导出当前进行中的进度（不依赖 localStorage 已写盘的时序） */
 async function exportSaveCode(): Promise<string> {
@@ -497,6 +521,7 @@ export const actions = {
   act, init, newGame, requestRestart, confirmRestart, skipTyper, floatText,
   exportSaveCode, importSaveCode, shopAct, npcAct,
   journalCount, journalExport, journalClear,
+  requestWipe, cancelWipe, wipeAll,
 };
 
 export type { GameAction };

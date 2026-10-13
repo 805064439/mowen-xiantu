@@ -468,6 +468,12 @@ footer{margin-top:18px; display:flex; align-items:center; justify-content:space-
 .cbtn:hover{background:var(--ink); color:#f2ecdd; border-color:var(--ink);}
 .cbtn.danger{border-color:var(--seal); color:var(--seal);}
 .cbtn.danger:hover{background:var(--seal); color:#f5efe0;}
+/* 彻底清档（v3.13.2）：ghost 是入口（低调），solid 是终确认（压秤） */
+.cbtn.ghost{border-color:var(--line2); color:var(--muted); letter-spacing:2px;}
+.cbtn.ghost:hover{background:var(--ink); color:#f2ecdd; border-color:var(--ink);}
+.cbtn.danger.solid{background:var(--seal); color:#f5efe0;}
+.cbtn.danger.solid:hover{background:#8a3a28; color:#fdf8ee;}
+.confirm-card .wipe-row{margin-top:10px;}
 
 @media (max-width:480px){
   #app,#app-root{padding:10px 10px 30px;}

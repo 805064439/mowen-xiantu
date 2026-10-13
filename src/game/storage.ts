@@ -94,6 +94,14 @@ export function removeSave() {
   localStorage.removeItem(SAVE_KEY);
 }
 
+/** 彻底清档：抹掉本设备上全部本地数据（存档/轮回名册/世数/输入历史）。不可恢复。
+ *  与 removeSave 的区别：那个只抹今生（名册与世数留给江湖记忆），这个是一切归零。 */
+export function wipeAllStorage(): void {
+  for (const k of [SAVE_KEY, REINC_KEY, CYCLE_KEY, HISTORY_KEY]) {
+    try { localStorage.removeItem(k); } catch (e) { /* 隐私模式等：忽略 */ }
+  }
+}
+
 /* ---------------- 仙缘令（存档 ↔ 文本码，跨设备迁移） ----------------
    格式：MW1Z.<base64(deflate-raw(json))>，浏览器不支持压缩时降级 MW1R.<base64(json)> */
 
